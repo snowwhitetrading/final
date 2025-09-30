@@ -35,7 +35,7 @@ def load_coal_volume_data():
     """Load and process coal volume quarterly data"""
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        coal_file = os.path.join(script_dir, 'data', 'coal_volume_quarterly.csv')
+        coal_file = os.path.join(script_dir,  'coal_volume_quarterly.csv')
         
         df = pd.read_csv(coal_file)
         

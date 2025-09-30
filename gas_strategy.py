@@ -31,7 +31,7 @@ def load_pvpower_data():
     """Load PVPower monthly data from CSV file"""
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        file_path = os.path.join(script_dir, 'data', 'volume_pow_monthly.csv')
+        file_path = os.path.join(script_dir,  'volume_pow_monthly.csv')
         df = pd.read_csv(file_path)
         return df
     except Exception as e:

@@ -172,7 +172,7 @@ def load_company_data(company_name):
         
         if company_name.upper() == "POW":
             # POW data from volume_pow_monthly.csv
-            file_path = os.path.join(script_dir, 'data', 'volume_pow_monthly.csv')
+            file_path = os.path.join(script_dir,  'volume_pow_monthly.csv')
             df = pd.read_csv(file_path)
             
             # Process POW data
@@ -185,7 +185,7 @@ def load_company_data(company_name):
             return df, True
         else:
             # Other companies from company_xxx_monthly.csv
-            file_path = os.path.join(script_dir, 'data', f'company_{company_name.lower()}_monthly.csv')
+            file_path = os.path.join(script_dir,  f'company_{company_name.lower()}_monthly.csv')
             
             if not os.path.exists(file_path):
                 st.warning(f"Data file for {company_name} not found: {file_path}")

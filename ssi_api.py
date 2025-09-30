@@ -142,7 +142,7 @@ def get_vnindex_data(start_date='2020-01-01', end_date='2025-06-30'):
     
     try:
         # First try to load from CSV file
-        csv_path = os.path.join(os.path.dirname(__file__), 'data', 'vn_index_monthly.csv')
+        csv_path = os.path.join(os.path.dirname(__file__),  'vn_index_monthly.csv')
         if os.path.exists(csv_path):
             df = pd.read_csv(csv_path)
             

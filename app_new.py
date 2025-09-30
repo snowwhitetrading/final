@@ -89,7 +89,7 @@ def load_vni_data():
     """Load VNI data from CSV file and convert to quarterly returns"""
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        vni_file_path = os.path.join(script_dir, 'data', 'vn_index_monthly.csv')
+        vni_file_path = os.path.join(script_dir,  'vn_index_monthly.csv')
         
         # Read VNI CSV
         vni_df = pd.read_csv(vni_file_path)
@@ -3175,7 +3175,7 @@ def load_vinacomin_data():
     try:
         import os
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        vinacomin_df = pd.read_csv(os.path.join(script_dir, 'data', 'vinacomin_data_monthly.csv'))
+        vinacomin_df = pd.read_csv(os.path.join(script_dir,  'vinacomin_data_monthly.csv'))
         
         # Convert update_date to datetime
         vinacomin_df['update_date'] = pd.to_datetime(vinacomin_df['update_date'])
@@ -3193,7 +3193,7 @@ def load_data():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     
     # Load monthly power volume data
-    df = pd.read_csv(os.path.join(script_dir, 'data', 'volume_break_monthly.csv'))
+    df = pd.read_csv(os.path.join(script_dir,  'volume_break_monthly.csv'))
     try:
         df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y')
     except:
@@ -3220,7 +3220,7 @@ def load_data():
     has_renewable_data = False
     try:
         # Load p_max_monthly.csv which contains the renewable company data we need
-        renewable_df = pd.read_csv(os.path.join(script_dir, 'data', 'p_max_monthly.csv'))
+        renewable_df = pd.read_csv(os.path.join(script_dir,  'p_max_monthly.csv'))
         
         # Check if 'date' column exists (lowercase in p_max file), rename to 'Date'
         if 'date' in renewable_df.columns:
@@ -3243,7 +3243,7 @@ def load_data():
     cgm_df = None
     has_cgm_data = False
     try:
-        cgm_df = pd.read_csv(os.path.join(script_dir, 'data', 'average_prices_monthly.csv'))
+        cgm_df = pd.read_csv(os.path.join(script_dir,  'average_prices_monthly.csv'))
         cgm_df['date'] = pd.to_datetime(cgm_df['date'])
         cgm_df['Year'] = cgm_df['date'].dt.year
         cgm_df['Month'] = cgm_df['date'].dt.month
@@ -3257,7 +3257,7 @@ def load_data():
     thermal_df = None
     has_thermal_data = False
     try:
-        thermal_df = pd.read_csv(os.path.join(script_dir, 'data', 'thermal_cost_monthly.csv'))
+        thermal_df = pd.read_csv(os.path.join(script_dir,  'thermal_cost_monthly.csv'))
         
         # Try to find date column with different possible names and check first column
         date_col = None
@@ -3305,7 +3305,7 @@ def load_data():
     reservoir_df = None
     has_reservoir_data = False
     try:
-        reservoir_df = pd.read_csv(os.path.join(script_dir, 'data', 'water_reservoir_monthly.csv'))
+        reservoir_df = pd.read_csv(os.path.join(script_dir,  'water_reservoir_monthly.csv'))
         # Try different date formats for flexible parsing
         try:
             reservoir_df['date_time'] = pd.to_datetime(reservoir_df['date_time'], format='%d/%m/%Y %H:%M')
@@ -3327,7 +3327,7 @@ def load_data():
     pow_df = None
     has_pow_data = False
     try:
-        pow_df = pd.read_csv(os.path.join(script_dir, 'data', 'volume_pow_monthly.csv'))
+        pow_df = pd.read_csv(os.path.join(script_dir,  'volume_pow_monthly.csv'))
         # Rename the first column to 'Date'
         pow_df.rename(columns={pow_df.columns[0]: 'Date'}, inplace=True)
         pow_df['Date'] = pd.to_datetime(pow_df['Date'])
@@ -3345,7 +3345,7 @@ def load_data():
     gso_df = None
     has_gso_data = False
     try:
-        gso_df = pd.read_csv(os.path.join(script_dir, 'data', 'volume_break_monthly.csv'))
+        gso_df = pd.read_csv(os.path.join(script_dir,  'volume_break_monthly.csv'))
         # Try to find date column and standardize
         if len(gso_df.columns) > 0:
             first_col = gso_df.columns[0]
@@ -3367,7 +3367,7 @@ def load_data():
     can_df = None
     has_can_data = False
     try:
-        can_df = pd.read_csv(os.path.join(script_dir, 'data', 'can_price_annually.csv'))
+        can_df = pd.read_csv(os.path.join(script_dir,  'can_price_annually.csv'))
         # Add Year column if it doesn't exist (assuming first column contains year data)
         if 'Year' not in can_df.columns and len(can_df.columns) > 0:
             # Check if first column looks like years
@@ -3384,7 +3384,7 @@ def load_data():
     alpha_df = None
     has_alpha_data = False
     try:
-        alpha_df = pd.read_csv(os.path.join(script_dir, 'data', 'alpha_ratio_annually.csv'))
+        alpha_df = pd.read_csv(os.path.join(script_dir,  'alpha_ratio_annually.csv'))
         has_alpha_data = True
     except FileNotFoundError:
         st.warning("Alpha ratio data file 'alpha_ratio_annually.csv' not found.")
@@ -3407,7 +3407,7 @@ def load_elasticity_data():
     import os
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        elasticity_df = pd.read_csv(os.path.join(script_dir, 'data', 'elasticity_annually.csv'))
+        elasticity_df = pd.read_csv(os.path.join(script_dir,  'elasticity_annually.csv'))
         return elasticity_df
     except FileNotFoundError:
         st.warning("Elasticity data file 'elasticity_annually.csv' not found.")
@@ -3426,7 +3426,7 @@ def load_enso_data():
     import os
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        enso_df = pd.read_csv(os.path.join(script_dir, 'data', 'enso_data_quarterly.csv'))
+        enso_df = pd.read_csv(os.path.join(script_dir,  'enso_data_quarterly.csv'))
         return enso_df
     except FileNotFoundError:
         st.warning("ENSO data file 'enso_data_quarterly.csv' not found.")
@@ -6145,7 +6145,7 @@ elif selected_page == "📈 Trading Strategies":
             # Load ENSO data for ONI strategy
             script_dir = os.path.dirname(os.path.abspath(__file__))
             try:
-                enso_df = pd.read_csv(os.path.join(script_dir, 'data', 'enso_data_quarterly.csv'))
+                enso_df = pd.read_csv(os.path.join(script_dir,  'enso_data_quarterly.csv'))
             except FileNotFoundError:
                 st.warning("ENSO data file not found. Using mock data for demonstration.")
                 dates = pd.date_range('2011-01-01', '2025-09-30', freq='Q')
@@ -6306,7 +6306,7 @@ elif selected_page == "📈 Trading Strategies":
                         # Load ENSO data
                         script_dir = os.path.dirname(os.path.abspath(__file__))
                         try:
-                            enso_df = pd.read_csv(os.path.join(script_dir, 'data', 'enso_data_quarterly.csv'))
+                            enso_df = pd.read_csv(os.path.join(script_dir,  'enso_data_quarterly.csv'))
                         except FileNotFoundError:
                             st.warning("ENSO data file 'enso_data_quarterly.csv' not found. Using mock data.")
                             # Create mock ENSO data

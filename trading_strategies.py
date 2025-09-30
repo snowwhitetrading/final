@@ -16,7 +16,7 @@ def load_vni_data():
     """Load VNI data from vn_index_monthly.csv file"""
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        vni_file = os.path.join(script_dir, 'data', 'vn_index_monthly.csv')
+        vni_file = os.path.join(script_dir,  'vn_index_monthly.csv')
         
         if os.path.exists(vni_file):
             df = pd.read_csv(vni_file)
@@ -76,7 +76,7 @@ def load_enso_data():
     """Load ENSO/ONI data from enso_data_quarterly.csv file"""
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        enso_file = os.path.join(script_dir, 'data', 'enso_data_quarterly.csv')
+        enso_file = os.path.join(script_dir,  'enso_data_quarterly.csv')
         
         if os.path.exists(enso_file):
             df = pd.read_csv(enso_file)
@@ -155,7 +155,7 @@ def get_all_power_stocks():
     # Get hydro stocks from water_list.csv
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        water_list_file = os.path.join(script_dir, 'data', 'water_list.csv')
+        water_list_file = os.path.join(script_dir,  'water_list.csv')
         if os.path.exists(water_list_file):
             lake_df = pd.read_csv(water_list_file)
             for col in lake_df.columns:
