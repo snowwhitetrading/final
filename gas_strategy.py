@@ -1,6 +1,6 @@
 """
 Gas Strategy Module - POW vs NT2 Quarterly Portfolio Strategy
-Based on quarterly YoY growth of contracted volumes from 1Q2019 to 2Q2025
+Based on quarterly YoY growth of contracted volumes from 1Q2019 to 3Q2025
 Note: Ca Mau contracted volume is 0 from 2019-2021, but is included in POW total contracted volume calculation
 
 Methodology:
@@ -27,11 +27,75 @@ except ImportError:
     SSI_API_AVAILABLE = False
     print("Warning: ssi_api module not available. Gas strategy will use mock data.")
 
+def load_vni_data():
+    """Load VNI data from CSV file and convert to quarterly returns"""
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        vni_file = os.path.join(script_dir, 'data', 'vn_index_monthly.csv')
+        
+        vni_df = pd.read_csv(vni_file)
+        
+        # The VNI file structure: first column is period, second is VNINDEX value
+        if len(vni_df.columns) >= 2:
+            vni_df.columns = ['period', 'close'] + list(vni_df.columns[2:])
+        else:
+            st.error("VNI file does not have expected structure")
+            return []
+        
+        # Clean and filter data - exclude header rows
+        vni_df = vni_df.dropna(subset=['period', 'close'])
+        
+        # Remove header rows like 'date', 'period', etc.
+        vni_df = vni_df[~vni_df['period'].astype(str).str.lower().isin(['date', 'period', 'time'])]
+        
+        # Convert close to numeric, handle commas
+        vni_df['close'] = vni_df['close'].astype(str).str.replace(',', '')
+        vni_df['close'] = pd.to_numeric(vni_df['close'], errors='coerce')
+        vni_df = vni_df.dropna(subset=['close'])
+        
+        # Ensure period format is consistent and convert from "1Q2019" to "2019Q1" format
+        vni_df['period'] = vni_df['period'].astype(str).str.strip()
+        
+        # Convert period format from "1Q2019" to "2019Q1" if needed
+        def convert_period_format(period_str):
+            try:
+                period_str = str(period_str).strip()
+                if 'Q' in period_str and len(period_str) > 3:
+                    parts = period_str.split('Q')
+                    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                        quarter = parts[0]
+                        year = parts[1]
+                        return f"{year}Q{quarter}"
+                return period_str
+            except:
+                return period_str
+        
+        vni_df['period'] = vni_df['period'].apply(convert_period_format)
+        
+        # Filter to only valid quarterly periods
+        vni_df = vni_df[vni_df['period'].str.contains(r'\d{4}Q\d', na=False)]
+        
+        # Sort by period
+        vni_df = vni_df.sort_values('period')
+        
+        # Calculate quarterly returns
+        vni_df['quarterly_return'] = vni_df['close'].pct_change() * 100
+        
+        # Filter to target period (2019Q1 to 2025Q3)
+        vni_filtered = vni_df[vni_df['period'].between('2019Q1', '2025Q3')]
+        
+        # Convert to list of dictionaries
+        return vni_filtered[['period', 'quarterly_return']].dropna().to_dict('records')
+        
+    except Exception as e:
+        st.error(f"Error loading VNI data: {e}")
+        return []
+
 def load_pvpower_data():
     """Load PVPower monthly data from CSV file"""
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        file_path = os.path.join(script_dir,  'volume_pow_monthly.csv')
+        file_path = os.path.join(script_dir, 'data',  'volume_pow_monthly.csv')
         df = pd.read_csv(file_path)
         return df
     except Exception as e:
@@ -67,10 +131,10 @@ def process_quarterly_data(df):
         df['Year'] = df['Date'].dt.year
         df['Quarter'] = df['Date'].dt.quarter
         
-        # Filter data from 1Q2019 to 2Q2025 (include 2019-2021 data where Ca Mau has 0 contracted volume)
+        # Filter data from 1Q2019 to 3Q2025 (include 2019-2021 data where Ca Mau has 0 contracted volume)
         # Note: Ca Mau contracted volume is 0 from 2019-2021, but we still include it in POW total
         start_date = pd.to_datetime('2019-01-01')
-        end_date = pd.to_datetime('2025-06-30')
+        end_date = pd.to_datetime('2025-09-30')
         df = df[(df['Date'] >= start_date) & (df['Date'] <= end_date)]
         
         # Find POW Contracted and NT2 contracted volume columns
@@ -324,9 +388,20 @@ def calculate_portfolio_returns(strategy_df, stock_data):
                 else:
                     returns_df.iloc[i, returns_df.columns.get_loc('Best_Growth_Return')] = nt2_ret
             
-            # Mock VNI return (normally would come from VNI data)
-            np.random.seed(123)
-            returns_df['VNI_Return'] = np.random.normal(1.5, 6, len(returns_df))
+            # Load real VNI return data
+            vni_data = load_vni_data()
+            
+            # Create VNI return mapping
+            vni_return_map = {}
+            for vni_record in vni_data:
+                vni_return_map[vni_record['period']] = vni_record['quarterly_return']
+            
+            # Map VNI returns to quarters, use 0 for missing data
+            returns_df['VNI_Return'] = returns_df['Quarter_Label'].map(vni_return_map).fillna(0)
+            
+            # Set first VNI return to 0 to start cumulative returns from baseline
+            if len(returns_df) > 0:
+                returns_df.iloc[0, returns_df.columns.get_loc('VNI_Return')] = 0
             
             # Calculate cumulative returns
             returns_df['Strategy_Cumulative'] = (1 + returns_df['Strategy_Return']/100).cumprod()
@@ -615,13 +690,16 @@ def run_gas_strategy(pow_df=None, convert_to_excel=None, convert_to_csv=None, ta
             
             col1, col2 = st.columns(2)
             
+            # Make keys unique based on tab_focus to avoid duplicates
+            tab_suffix = f"_{tab_focus}" if tab_focus else "_default"
+            
             with col1:
                 if st.download_button(
                     label="📊 Download Strategy Data (Excel)",
                     data=convert_to_excel(returns_df),
                     file_name="pow_nt2_strategy_data.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="gas_strategy_excel_download"
+                    key=f"gas_strategy_excel_download{tab_suffix}"
                 ):
                     st.success("Strategy data downloaded!")
             
@@ -631,7 +709,7 @@ def run_gas_strategy(pow_df=None, convert_to_excel=None, convert_to_csv=None, ta
                     data=convert_to_csv(returns_df),
                     file_name="pow_nt2_strategy_data.csv",
                     mime="text/csv",
-                    key="gas_strategy_csv_download"
+                    key=f"gas_strategy_csv_download{tab_suffix}"
                 ):
                     st.success("Strategy data downloaded!")
         

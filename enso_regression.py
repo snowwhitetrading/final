@@ -986,7 +986,7 @@ def load_vni_data() -> pd.DataFrame:
     """Load VNI data from vn_index_monthly.csv file"""
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        vni_file = os.path.join(script_dir,  'vn_index_monthly.csv')
+        vni_file = os.path.join(script_dir, 'data',  'vn_index_monthly.csv')
         
         vni_df = pd.read_csv(vni_file)
         

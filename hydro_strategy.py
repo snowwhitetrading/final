@@ -40,7 +40,7 @@ def load_water_reservoir_data():
     """Load and process water reservoir data"""
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        reservoir_file = os.path.join(script_dir,  'water_reservoir_monthly.csv')
+        reservoir_file = os.path.join(script_dir, 'data',  'water_reservoir_monthly.csv')
         
         df = pd.read_csv(reservoir_file)
         
@@ -85,7 +85,7 @@ def load_stock_mappings():
     """Load stock mappings from water_list.csv"""
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        lake_file = os.path.join(script_dir,  'water_list.csv')
+        lake_file = os.path.join(script_dir, 'data',  'water_list.csv')
         
         df = pd.read_csv(lake_file)
         
@@ -552,7 +552,7 @@ def load_vni_data():
     """Load VNI index data starting from 1Q2020"""
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        vni_file = os.path.join(script_dir,  'vn_index_monthly.csv')
+        vni_file = os.path.join(script_dir, 'data',  'vn_index_monthly.csv')
         
         if not os.path.exists(vni_file):
             return pd.DataFrame()
@@ -1254,7 +1254,7 @@ def run_flood_portfolio_strategy(strategy_type="Current (YoY Growth)", selected_
 
        **Portfolio**:
         - 1 liquid stock (50% weight) - REE PC1 HDG GEG
-        - 1 illiquid stock (50% weight) - AVC GHC DRL HNA SHP CHP S4A SBA NED TMP VSH
+        - 1 illiquid stock (50% weight) - AVC GHC HNA SHP CHP SBA NED TMP VSH
         
         """)
         

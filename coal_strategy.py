@@ -35,7 +35,7 @@ def load_coal_volume_data():
     """Load and process coal volume quarterly data"""
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        coal_file = os.path.join(script_dir,  'coal_volume_quarterly.csv')
+        coal_file = os.path.join(script_dir, 'data',  'coal_volume_quarterly.csv')
         
         df = pd.read_csv(coal_file)
         
@@ -132,7 +132,7 @@ def fetch_stock_data(symbols):
         if SSI_API_AVAILABLE:
             try:
                 # Fetch real data from SSI API using the correct function name
-                batch_data = get_stock_data_batch(symbols, '2018-01-01', '2025-06-30')
+                batch_data = get_stock_data_batch(symbols, '2018-01-01', '2025-09-30')
                 
                 for symbol in symbols:
                     if symbol in batch_data and not batch_data[symbol].empty:
@@ -226,8 +226,9 @@ def create_coal_portfolios(growth_data, quarterly_returns):
         
         # Get available periods from 1Q2019 to 3Q2025
         # Start from 1Q2019 since we need 4Q2018 growth to select for 1Q2019
+        # Example: 2025Q2 volume data is used to select stocks for 2025Q3 portfolio
         periods = sorted(growth_data['period'].unique())
-        target_periods = [p for p in periods if p >= '2019Q1' and p <= '2025Q2']
+        target_periods = [p for p in periods if p >= '2019Q1' and p < '2025Q4']
         
         # Helper function to get previous quarter
         def get_previous_quarter(period):
@@ -241,6 +242,7 @@ def create_coal_portfolios(growth_data, quarterly_returns):
         
         for period in target_periods:
             # Get previous quarter to use its growth for stock selection
+            # Example: For 2025Q3 portfolio, use 2025Q2 volume growth data
             prev_period = get_previous_quarter(period)
             
             # Get growth data for previous quarter
@@ -324,7 +326,7 @@ def create_benchmark_portfolios(quarterly_returns):
             if stock in coal_stocks:
                 all_periods.update(data['period'].tolist())
         
-        periods = sorted([p for p in all_periods if p >= '2019Q1' and p <= '2025Q2'])
+        periods = sorted([p for p in all_periods if p >= '2019Q1' and p <= '2025Q3'])
         
         for period in periods:
             equal_weight_return = 0
@@ -357,7 +359,7 @@ def load_vni_data():
     """Load VNI data from CSV file and convert to quarterly returns"""
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        vni_file = os.path.join(script_dir, 'vn_index_monthly.csv')
+        vni_file = os.path.join(script_dir, 'data', 'vn_index_monthly.csv')
         
         vni_df = pd.read_csv(vni_file)
         
@@ -407,8 +409,8 @@ def load_vni_data():
         # Calculate quarterly returns
         vni_df['quarterly_return'] = vni_df['close'].pct_change() * 100
         
-        # Filter to target period (2019Q1 to 2025Q2)
-        vni_filtered = vni_df[vni_df['period'].between('2019Q1', '2025Q2')]
+        # Filter to target period (2019Q1 to 2025Q3)
+        vni_filtered = vni_df[vni_df['period'].between('2019Q1', '2025Q3')]
         
         # Convert to list of dictionaries
         return vni_filtered[['period', 'quarterly_return']].dropna().to_dict('records')
