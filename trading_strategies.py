@@ -1060,7 +1060,7 @@ def export_strategy_comparison_to_csv(unified_df):
         
         # Get the script directory and create the file path
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        csv_file_path = os.path.join(script_dir, 'data', 'trading_strategies_comparison.csv')
+        csv_file_path = os.path.join(script_dir, 'data','strategies_results', 'trading_strategies_comparison.csv')
         
         # Create directory if it doesn't exist
         os.makedirs(os.path.dirname(csv_file_path), exist_ok=True)
@@ -1544,7 +1544,7 @@ def export_stock_weights_to_csv(enso_df=None):
         weights_df['weight'] = weights_df['weight'].round(2)
         
         # Export to CSV
-        csv_file_path = os.path.join(script_dir, 'data', 'stock_weights.csv')
+        csv_file_path = os.path.join(script_dir, 'data','strategies_results', 'stock_weights.csv')
         weights_df.to_csv(csv_file_path, index=False)
         
         print(f"✅ Successfully exported stock weights to: {csv_file_path}")
@@ -1817,7 +1817,7 @@ def plot_cumulative_returns_from_csv():
     """Load and plot cumulative returns from trading_strategies_comparison.csv"""
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        csv_file = os.path.join(script_dir, 'data', 'trading_strategies_comparison.csv')
+        csv_file = os.path.join(script_dir, 'data','strategies_results', 'trading_strategies_comparison.csv')
         
         if not os.path.exists(csv_file):
             st.error(f"❌ File not found: {csv_file}")
@@ -2631,7 +2631,7 @@ def display_simple_cumulative_returns():
                 # Load stock weights from CSV
                 try:
                     script_dir = os.path.dirname(os.path.abspath(__file__))
-                    weights_file = os.path.join(script_dir, 'data', 'stock_weights.csv')
+                    weights_file = os.path.join(script_dir, 'data','strategies_results', 'stock_weights.csv')
                     
                     if os.path.exists(weights_file):
                         weights_df = pd.read_csv(weights_file)
@@ -2729,7 +2729,7 @@ def display_simple_cumulative_returns():
         st.error("❌ Unable to load trading strategies comparison data from CSV file.")
         # Show debug information
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        csv_file = os.path.join(script_dir, 'data', 'trading_strategies_comparison.csv')
+        csv_file = os.path.join(script_dir, 'data','strategies_results', 'trading_strategies_comparison.csv')
         st.error(f"Expected file location: {csv_file}")
         st.error(f"File exists: {os.path.exists(csv_file)}")
         
@@ -2969,7 +2969,7 @@ if __name__ == "__main__":
     try:
         # Check if we already have a CSV file with data
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        csv_file = os.path.join(script_dir, 'data', 'trading_strategies_comparison.csv')
+        csv_file = os.path.join(script_dir, 'data','strategies_results', 'trading_strategies_comparison.csv')
         
         if os.path.exists(csv_file):
             # Load existing CSV and verify it has recent data
@@ -2988,7 +2988,7 @@ if __name__ == "__main__":
                 print(f"✅ CSV file is available at: {csv_file}")
                 
                 # Also check and generate stock_weights.csv if needed
-                stock_weights_file = os.path.join(script_dir, 'data', 'stock_weights.csv')
+                stock_weights_file = os.path.join(script_dir, 'data','strategies_results', 'stock_weights.csv')
                 if not os.path.exists(stock_weights_file):
                     print("\n📊 Stock weights CSV not found, generating...")
                     enso_file = os.path.join(script_dir, 'data', 'enso_data_quarterly.csv')
