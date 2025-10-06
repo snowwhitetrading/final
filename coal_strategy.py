@@ -125,44 +125,54 @@ def calculate_yoy_growth(coal_df):
         return pd.DataFrame()
 
 def fetch_stock_data(symbols):
-    """Fetch stock price data using SSI API or generate mock data"""
+    """Fetch stock price data from raw_stock_price.csv file"""
     try:
         stock_data = {}
         
-        if SSI_API_AVAILABLE:
+        # Load data from CSV file
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        csv_file = os.path.join(script_dir, 'data', 'raw_stock_price.csv')
+        
+        if not os.path.exists(csv_file):
+            st.error(f"❌ CSV file not found: {csv_file}")
+            return {}
+        
+        # Read the CSV file
+        df = pd.read_csv(csv_file)
+        
+        # Convert timestamp to datetime
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        
+        # Filter for coal stocks only (since this is coal strategy)
+        coal_df = df[df['type'] == 'coal'].copy()
+        
+        # Filter for requested symbols
+        available_symbols = coal_df['symbol'].unique()
+        requested_symbols = [symbol for symbol in symbols if symbol in available_symbols]
+        
+        if not requested_symbols:
+            st.warning(f"❌ No coal stocks found in CSV for symbols: {symbols}")
+            return {}
+        
+        # Group by symbol and create stock data dictionary
+        for symbol in requested_symbols:
             try:
-                # Fetch real data from SSI API using the correct function name
-                batch_data = get_stock_data_batch(symbols, '2018-01-01', '2025-09-30')
+                symbol_data = coal_df[coal_df['symbol'] == symbol].copy()
                 
-                for symbol in symbols:
-                    if symbol in batch_data and not batch_data[symbol].empty:
-                        data = batch_data[symbol].copy()
-                        # Ensure the data has the expected structure
-                        if 'close' in data.columns:
-                            # Convert 'time' column to 'date' if it exists
-                            if 'time' in data.columns:
-                                data['date'] = pd.to_datetime(data['time'])
-                            elif 'tradingDate' in data.columns:
-                                data['date'] = pd.to_datetime(data['tradingDate'])
-                            else:
-                                st.warning(f"No date column found for {symbol}")
-                                continue
-                            
-                            stock_data[symbol] = data
-                        
-                if stock_data:
-                    return stock_data
-                else:
-                    st.error("❌ No data returned from SSI API")
-                    return {}
+                if not symbol_data.empty:
+                    # Rename columns to match expected format
+                    symbol_data = symbol_data.rename(columns={'timestamp': 'date'})
+                    symbol_data = symbol_data.sort_values('date')
+                    stock_data[symbol] = symbol_data[['date', 'close']].copy()
                     
             except Exception as e:
-                st.error(f"❌ Failed to fetch real stock data: {e}")
-                return {}
+                st.warning(f"Could not process data for {symbol}: {e}")
+                continue
         
-        if not SSI_API_AVAILABLE:
-            st.error("❌ SSI API not available. Cannot fetch real stock data.")
-            return {}
+        if not stock_data:
+            st.error("❌ Failed to load any stock data from CSV")
+        else:
+            st.success(f"✅ Loaded data for {len(stock_data)} coal stocks from CSV")
         
         return stock_data
         
@@ -302,11 +312,141 @@ def create_coal_portfolios(growth_data, quarterly_returns):
                 'selection_based_on': prev_period
             })
         
+        # Add next quarter decision based on last quarter's growth data (for forward-looking portfolio)
+        # Example: Use 2025Q2 growth to determine 2025Q3 portfolio allocation
+        if len(periods) > 0:
+            last_period_with_growth = periods[-1]
+            
+            # Calculate next quarter
+            last_year = int(last_period_with_growth[:4])
+            last_quarter = int(last_period_with_growth[-1])
+            next_quarter = last_quarter + 1
+            next_year = last_year
+            if next_quarter > 4:
+                next_quarter = 1
+                next_year += 1
+            next_period = f"{next_year}Q{next_quarter}"
+            
+            # Get growth data for last available quarter to make decision for next quarter
+            last_growth = growth_data[growth_data['period'] == last_period_with_growth]
+            
+            if not last_growth.empty:
+                # Sort by YoY growth
+                last_growth = last_growth.sort_values('yoy_growth', ascending=False)
+                
+                # DIVERSIFIED PORTFOLIO: Top 2 stocks with 50%/50% allocation
+                diversified_return = 0
+                diversified_stocks = []
+                
+                if len(last_growth) >= 2:
+                    top_2_stocks = last_growth.head(2)['company'].tolist()
+                    diversified_stocks = top_2_stocks
+                    
+                    # Calculate portfolio return (50%/50%)
+                    for stock in top_2_stocks:
+                        if stock in quarterly_returns:
+                            stock_data = quarterly_returns[stock]
+                            period_return = stock_data[stock_data['period'] == next_period]['quarterly_return']
+                            if not period_return.empty:
+                                diversified_return += period_return.iloc[0] * 0.5
+                
+                # CONCENTRATED PORTFOLIO: Top 1 stock with 100% allocation
+                concentrated_return = 0
+                concentrated_stocks = []
+                
+                if len(last_growth) >= 1:
+                    top_stock = last_growth.head(1)['company'].iloc[0]
+                    concentrated_stocks = [top_stock]
+                    
+                    # Calculate portfolio return (100%)
+                    if top_stock in quarterly_returns:
+                        stock_data = quarterly_returns[top_stock]
+                        period_return = stock_data[stock_data['period'] == next_period]['quarterly_return']
+                        if not period_return.empty:
+                            concentrated_return = period_return.iloc[0]
+                
+                # Store portfolio data for next quarter
+                portfolios['diversified'].append({
+                    'period': next_period,
+                    'selected_stocks': ', '.join(diversified_stocks),
+                    'quarterly_return': diversified_return,
+                    'selection_based_on': last_period_with_growth
+                })
+                
+                portfolios['concentrated'].append({
+                    'period': next_period,
+                    'selected_stocks': ', '.join(concentrated_stocks),
+                    'quarterly_return': concentrated_return,
+                    'selection_based_on': last_period_with_growth
+                })
+        
         return portfolios
         
     except Exception as e:
         st.error(f"Error creating coal portfolios: {e}")
         return {'diversified': [], 'concentrated': []}
+
+def export_coal_strategy_results(portfolios, quarterly_returns, filename='coal_strategy_results.csv'):
+    """Export coal strategy results to CSV file"""
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_path = os.path.join(script_dir, 'data', 'strategies_results', filename)
+        
+        # Create results DataFrame - portfolios only
+        results_data = []
+        
+        # Add portfolio results
+        for strategy_name, portfolio_list in portfolios.items():
+            for portfolio_entry in portfolio_list:
+                results_data.append({
+                    'strategy_type': strategy_name,
+                    'period': portfolio_entry['period'],
+                    'selected_stocks': portfolio_entry.get('selected_stocks', ''),
+                    'quarterly_return': portfolio_entry['quarterly_return'],
+                    'selection_based_on': portfolio_entry.get('selection_based_on', '')
+                })
+        
+        # Create DataFrame and calculate cumulative returns
+        if results_data:
+            results_df = pd.DataFrame(results_data)
+            
+            # Calculate cumulative returns for each strategy
+            for strategy in results_df['strategy_type'].unique():
+                strategy_mask = results_df['strategy_type'] == strategy
+                strategy_data = results_df[strategy_mask].copy()
+                strategy_data = strategy_data.sort_values('period')
+                
+                # Calculate cumulative returns
+                strategy_data['cumulative_return'] = (1 + strategy_data['quarterly_return'] / 100).cumprod() - 1
+                strategy_data['cumulative_return'] *= 100
+                
+                # Update the main dataframe
+                results_df.loc[strategy_mask, 'cumulative_return'] = strategy_data['cumulative_return'].values
+            
+            results_df = results_df.sort_values(['strategy_type', 'period']).reset_index(drop=True)
+            results_df.to_csv(output_path, index=False)
+            
+            st.success(f"✅ Coal strategy results exported to: {output_path}")
+            st.info(f"📊 Exported {len(results_df)} records covering {results_df['strategy_type'].nunique()} portfolio strategies")
+            
+            # Show summary
+            strategy_summary = results_df.groupby('strategy_type').agg({
+                'period': 'count',
+                'quarterly_return': ['mean', 'std'],
+                'cumulative_return': 'last'
+            }).round(2)
+            
+            st.write("### Export Summary:")
+            st.dataframe(strategy_summary)
+            
+            return output_path
+        else:
+            st.warning("⚠️ No data to export")
+            return None
+            
+    except Exception as e:
+        st.error(f"❌ Error exporting results: {e}")
+        return None
 
 def create_benchmark_portfolios(quarterly_returns):
     """Create equally weighted portfolio of all coal stocks starting from 2018Q4 baseline"""
@@ -649,6 +789,10 @@ def run_coal_strategy():
         
         # Create portfolios
         portfolios = create_coal_portfolios(growth_data, quarterly_returns)
+        
+        # Export strategy results to CSV
+        export_coal_strategy_results(portfolios, quarterly_returns)
+        
         benchmark_portfolio = create_benchmark_portfolios(quarterly_returns)
         vni_data = load_vni_data()
         

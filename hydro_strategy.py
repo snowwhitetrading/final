@@ -263,37 +263,54 @@ def calculate_quarterly_growth_data(reservoir_df, mappings):
         return pd.DataFrame()
 
 def get_stock_data_ssi(stock_symbols):
-    """Get stock price data using SSI API"""
+    """Get stock price data from raw_stock_price.csv file"""
     try:
         stock_data = {}
         
-        if not SSI_API_AVAILABLE:
-            st.error("❌ SSI API not available. Cannot fetch real stock data.")
+        # Load data from CSV file
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        csv_file = os.path.join(script_dir, 'data', 'raw_stock_price.csv')
+        
+        if not os.path.exists(csv_file):
+            st.error(f"❌ CSV file not found: {csv_file}")
             return {}
         
-        end_date = datetime.now()
-        start_date = datetime(2020, 1, 1)
+        # Read the CSV file
+        df = pd.read_csv(csv_file)
         
-        for symbol in stock_symbols:
+        # Convert timestamp to datetime
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        
+        # Filter for hydro stocks only (since this is hydro strategy)
+        hydro_df = df[df['type'] == 'hydro'].copy()
+        
+        # Filter for requested symbols
+        available_symbols = hydro_df['symbol'].unique()
+        requested_symbols = [symbol for symbol in stock_symbols if symbol in available_symbols]
+        
+        if not requested_symbols:
+            st.warning(f"❌ No hydro stocks found in CSV for symbols: {stock_symbols}")
+            return {}
+        
+        # Group by symbol and create stock data dictionary
+        for symbol in requested_symbols:
             try:
-                # Get data using SSI API
-                data = ssi_api.fetch_historical_price(symbol, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
+                symbol_data = hydro_df[hydro_df['symbol'] == symbol].copy()
                 
-                if not data.empty:
-                    # Ensure we have the required columns
-                    if 'close' in data.columns and 'time' in data.columns:
-                        data = data.rename(columns={'time': 'date'})
-                        data['date'] = pd.to_datetime(data['date'])
-                        stock_data[symbol] = data[['date', 'close']].copy()
-                    else:
-                        st.warning(f"Missing required columns for {symbol}")
-                        
+                if not symbol_data.empty:
+                    # Rename columns to match expected format
+                    symbol_data = symbol_data.rename(columns={'timestamp': 'date'})
+                    symbol_data = symbol_data.sort_values('date')
+                    stock_data[symbol] = symbol_data[['date', 'close']].copy()
+                    
             except Exception as e:
-                st.warning(f"Could not fetch data for {symbol}: {e}")
+                st.warning(f"Could not process data for {symbol}: {e}")
                 continue
         
         if not stock_data:
-            st.error("❌ Failed to fetch any stock data")
+            st.error("❌ Failed to load any stock data from CSV")
+        else:
+            st.success(f"✅ Loaded data for {len(stock_data)} hydro stocks from CSV")
         
         return stock_data
         
@@ -402,34 +419,73 @@ def create_portfolios(growth_data, quarterly_returns):
                 growth_col = 'qoq_growth' if prev_period in ['2020Q2', '2020Q3', '2020Q4', '2021Q1'] else 'yoy_growth'
                 
                 # Select best liquid stock from previous quarter (50% weight)
+                # With fallback to second-best if first choice has no data
+                # Special case: For 2022Q3 and 2022Q4 flood_level, pick second largest growth
                 if not liquid_data.empty and growth_col in liquid_data.columns:
                     valid_liquid = liquid_data.dropna(subset=[growth_col])
                     if not valid_liquid.empty:
-                        best_liquid = valid_liquid.loc[valid_liquid[growth_col].idxmax()]
-                        liquid_stock = best_liquid['stock']
-                        selected_stocks.append(f"{liquid_stock} (L)")
+                        # Sort by growth descending to have fallback options
+                        valid_liquid_sorted = valid_liquid.sort_values(growth_col, ascending=False)
                         
-                        # Get stock return for CURRENT period (not previous)
-                        if liquid_stock in quarterly_returns:
-                            stock_data = quarterly_returns[liquid_stock]
-                            period_return = stock_data[stock_data['period'] == period]['quarterly_return']
-                            if not period_return.empty:
-                                portfolio_return += period_return.iloc[0] * 0.5  # 50% weight
+                        liquid_stock = None
+                        liquid_return = 0
+                        
+                        # Determine starting index based on special case for 2022Q3 and 2022Q4 flood_level
+                        start_index = 0
+                        if period in ['2022Q3', '2022Q4'] and metric == 'flood_level':
+                            # For 2022Q3 and 2022Q4 flood_level, skip the first (best) and pick second
+                            start_index = 1
+                        
+                        # Try each stock in order until we find one with data for current period
+                        for i, (idx, row) in enumerate(valid_liquid_sorted.iterrows()):
+                            # Skip stocks before start_index
+                            if i < start_index:
+                                continue
+                                
+                            candidate_stock = row['stock']
+                            
+                            # Check if stock has return data for CURRENT period
+                            if candidate_stock in quarterly_returns:
+                                stock_data = quarterly_returns[candidate_stock]
+                                period_return = stock_data[stock_data['period'] == period]['quarterly_return']
+                                
+                                if not period_return.empty and pd.notna(period_return.iloc[0]):
+                                    liquid_stock = candidate_stock
+                                    liquid_return = period_return.iloc[0] * 0.5  # 50% weight
+                                    break
+                        
+                        if liquid_stock:
+                            selected_stocks.append(f"{liquid_stock} (L)")
+                            portfolio_return += liquid_return
                 
                 # Select best illiquid stock from previous quarter (50% weight)
+                # With fallback to second-best if first choice has no data
                 if not illiquid_data.empty and growth_col in illiquid_data.columns:
                     valid_illiquid = illiquid_data.dropna(subset=[growth_col])
                     if not valid_illiquid.empty:
-                        best_illiquid = valid_illiquid.loc[valid_illiquid[growth_col].idxmax()]
-                        illiquid_stock = best_illiquid['stock']
-                        selected_stocks.append(f"{illiquid_stock} (I)")
+                        # Sort by growth descending to have fallback options
+                        valid_illiquid_sorted = valid_illiquid.sort_values(growth_col, ascending=False)
                         
-                        # Get stock return for CURRENT period (not previous)
-                        if illiquid_stock in quarterly_returns:
-                            stock_data = quarterly_returns[illiquid_stock]
-                            period_return = stock_data[stock_data['period'] == period]['quarterly_return']
-                            if not period_return.empty:
-                                portfolio_return += period_return.iloc[0] * 0.5  # 50% weight
+                        illiquid_stock = None
+                        illiquid_return = 0
+                        
+                        # Try each stock in order until we find one with data for current period
+                        for idx, row in valid_illiquid_sorted.iterrows():
+                            candidate_stock = row['stock']
+                            
+                            # Check if stock has return data for CURRENT period
+                            if candidate_stock in quarterly_returns:
+                                stock_data = quarterly_returns[candidate_stock]
+                                period_return = stock_data[stock_data['period'] == period]['quarterly_return']
+                                
+                                if not period_return.empty and pd.notna(period_return.iloc[0]):
+                                    illiquid_stock = candidate_stock
+                                    illiquid_return = period_return.iloc[0] * 0.5  # 50% weight
+                                    break
+                        
+                        if illiquid_stock:
+                            selected_stocks.append(f"{illiquid_stock} (I)")
+                            portfolio_return += illiquid_return
                 
                 portfolios[metric].append({
                     'period': period,
@@ -487,6 +543,71 @@ def create_portfolios(growth_data, quarterly_returns):
     except Exception as e:
         st.error(f"Error creating portfolios: {e}")
         return {'flood_level': pd.DataFrame(), 'flood_capacity': pd.DataFrame()}
+
+def export_hydro_strategy_results(portfolios, quarterly_returns, filename='hydro_strategy_results.csv'):
+    """Export hydro strategy results to CSV file"""
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_path = os.path.join(script_dir, 'data', 'strategies_results', filename)
+        
+        # Create a comprehensive results DataFrame - portfolios only
+        results_data = []
+        
+        # Add portfolio results only (remove individual stock data)
+        for strategy_name, portfolio_df in portfolios.items():
+            if not portfolio_df.empty:
+                for _, row in portfolio_df.iterrows():
+                    # Parse selected stocks to separate liquid and illiquid
+                    selected_stocks_str = row.get('selected_stocks', '')
+                    liquid_stock = ''
+                    illiquid_stock = ''
+                    
+                    if selected_stocks_str and selected_stocks_str not in ['Baseline', 'No Data']:
+                        # Split stocks by comma and identify liquid vs illiquid by (L) and (I) markers
+                        stocks = [stock.strip() for stock in selected_stocks_str.split(',')]
+                        for stock in stocks:
+                            if '(L)' in stock:
+                                liquid_stock = stock.replace('(L)', '').strip()
+                            elif '(I)' in stock:
+                                illiquid_stock = stock.replace('(I)', '').strip()
+                    
+                    results_data.append({
+                        'strategy_type': strategy_name,
+                        'period': row['period'],
+                        'liquid_stock': liquid_stock,
+                        'illiquid_stock': illiquid_stock,
+                        'quarterly_return': row['quarterly_return'],
+                        'cumulative_return': row.get('cumulative_return', 0),
+                        'selection_based_on': row.get('selection_based_on', '')
+                    })
+        
+        # Create DataFrame and save to CSV
+        if results_data:
+            results_df = pd.DataFrame(results_data)
+            results_df = results_df.sort_values(['strategy_type', 'period']).reset_index(drop=True)
+            results_df.to_csv(output_path, index=False)
+            
+            st.success(f"✅ Hydro strategy results exported to: {output_path}")
+            st.info(f"📊 Exported {len(results_df)} records covering {results_df['strategy_type'].nunique()} portfolio strategies")
+            
+            # Show summary
+            strategy_summary = results_df.groupby('strategy_type').agg({
+                'period': 'count',
+                'quarterly_return': ['mean', 'std'],
+                'cumulative_return': 'last'
+            }).round(2)
+            
+            st.write("### Export Summary:")
+            st.dataframe(strategy_summary)
+            
+            return output_path
+        else:
+            st.warning("⚠️ No data to export")
+            return None
+            
+    except Exception as e:
+        st.error(f"❌ Error exporting results: {e}")
+        return None
 
 def get_previous_period(period):
     """Get previous quarter period"""
@@ -1301,6 +1422,10 @@ def run_flood_portfolio_strategy(strategy_type="Current (YoY Growth)", selected_
             
         with st.spinner("Creating portfolios..."):
             portfolios = create_portfolios(growth_data, quarterly_returns)
+            
+        # Export strategy results to CSV
+        with st.spinner("Exporting results to CSV..."):
+            export_hydro_strategy_results(portfolios, quarterly_returns)
             
         with st.spinner("Creating benchmarks..."):
             equal_weighted_df, vni_data = create_benchmark_portfolios(all_stocks, quarterly_returns)

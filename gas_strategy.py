@@ -4,11 +4,14 @@ Based on quarterly YoY growth of contracted volumes from 1Q2019 to 3Q2025
 Note: Ca Mau contracted volume is 0 from 2019-2021, but is included in POW total contracted volume calculation
 
 Methodology:
-- Diversified portfolio
-+ If POW growth - NT2 growth > 20%, invest 100% in POW in the next quarter
-+ If NT2 growth - POW growth > 20%, invest 100% in NT2 in the next quarter  
-+ Otherwise, use equal weight (50/50)
-- Concentrated portfolio: Invest 100% in the stock having higher YoY growth
+- Diversified portfolio (20% threshold strategy):
+  + If POW growth - NT2 growth > 20%, invest 100% in POW in the next quarter
+  + If NT2 growth - POW growth > 20%, invest 100% in NT2 in the next quarter  
+  + Otherwise, use equal weight (50/50)
+  
+- Concentrated portfolio (no threshold):
+  + Invest 100% in the stock with higher contracted volume YoY growth from previous quarter
+  + Uses forward-looking approach: previous quarter's growth determines current quarter's allocation
 """
 
 import pandas as pd
@@ -264,6 +267,60 @@ def construct_portfolio_strategy(quarterly_df):
                 strategy_df.loc[i+1, 'POW_Weight'] = 0.5
                 strategy_df.loc[i+1, 'NT2_Weight'] = 0.5
         
+        # Add next quarter decision based on last quarter's data (for forward-looking portfolio)
+        # Example: Use 2025Q2 growth to determine 2025Q3 portfolio allocation
+        if len(strategy_df) > 0:
+            last_row = strategy_df.iloc[-1]
+            last_date = last_row['Date']
+            last_quarter_label = last_row['Quarter_Label']
+            
+            # Calculate next quarter
+            next_quarter_num = last_row['Quarter'] + 1
+            next_year = last_row['Year']
+            if next_quarter_num > 4:
+                next_quarter_num = 1
+                next_year += 1
+            
+            next_quarter_label = f"{next_year}Q{next_quarter_num}"
+            next_date = pd.to_datetime(f"{next_year}-{next_quarter_num*3:02d}-01")  # First day of next quarter
+            
+            # Make decision for next quarter based on current (last) quarter's growth
+            pow_weight = 0.5
+            nt2_weight = 0.5
+            decision = 'Equal'
+            
+            if not pd.isna(last_row['POW_YoY_Growth']) and not pd.isna(last_row['NT2_YoY_Growth']):
+                pow_growth = last_row['POW_YoY_Growth']
+                nt2_growth = last_row['NT2_YoY_Growth']
+                pow_advantage = pow_growth - nt2_growth
+                nt2_advantage = nt2_growth - pow_growth
+                
+                if pow_advantage > 20:
+                    pow_weight = 1.0
+                    nt2_weight = 0.0
+                    decision = 'POW'
+                elif nt2_advantage > 20:
+                    pow_weight = 0.0
+                    nt2_weight = 1.0
+                    decision = 'NT2'
+            
+            # Create new row for next quarter
+            new_row = pd.DataFrame([{
+                'Date': next_date,
+                'Year': next_year,
+                'Quarter': next_quarter_num,
+                'Quarter_Label': next_quarter_label,
+                'POW_Contracted': np.nan,  # No volume data for future quarter
+                'NT2_Contracted': np.nan,
+                'POW_YoY_Growth': np.nan,
+                'NT2_YoY_Growth': np.nan,
+                'Portfolio_Decision': decision,
+                'POW_Weight': pow_weight,
+                'NT2_Weight': nt2_weight
+            }])
+            
+            strategy_df = pd.concat([strategy_df, new_row], ignore_index=True)
+        
         return strategy_df
         
     except Exception as e:
@@ -272,75 +329,82 @@ def construct_portfolio_strategy(quarterly_df):
 
 def get_stock_returns_ssi(tickers=['POW', 'NT2'], start_year=2019, end_year=2025):
     """
-    Get stock returns using SSI API method following hydro_strategy pattern
+    Get stock returns from raw_stock_price.csv file
     Start from 2019 to align with gas strategy timing
     """
     try:
-        # Check SSI API availability following hydro_strategy pattern
-        SSI_API_AVAILABLE = False
-        try:
-            from . import ssi_api
-            SSI_API_AVAILABLE = True
-        except ImportError:
-            try:
-                import ssi_api
-                SSI_API_AVAILABLE = True
-            except ImportError:
-                st.warning("SSI API not available. Using mock data for demonstration.")
-                SSI_API_AVAILABLE = False
-        
         stock_data = {}
         
-        if SSI_API_AVAILABLE:
-            # Use SSI API to get actual stock data following app_new pattern
-            for ticker in tickers:
-                try:
-                    # Use get_stock_history function from ssi_api
-                    data = ssi_api.get_stock_history(ticker, f"{start_year}-01-01", f"{end_year}-12-31")
-                    if data is not None and not data.empty:
-                        # Reset index to get the time column as a regular column
-                        data = data.reset_index()
-                        
-                        # Handle column names - SSI API returns 'time' and 'close'
-                        if 'time' in data.columns:
-                            data = data.rename(columns={'time': 'Date'})
-                        if 'close' in data.columns:
-                            data = data.rename(columns={'close': 'Close'})
-                        
-                        # Ensure we have the required columns
-                        if 'Date' not in data.columns or 'Close' not in data.columns:
-                            st.error(f"Missing required columns for {ticker}. Available: {data.columns.tolist()}")
-                            continue
-                            
-                        # Convert to quarterly data using quarter-end prices
-                        data['Date'] = pd.to_datetime(data['Date'])
-                        data = data.set_index('Date')
-                        
-                        # Resample to quarterly using last price of quarter (quarter-end)
-                        quarterly_data = data['Close'].resample('Q').last().to_frame()
-                        quarterly_data.columns = [f'{ticker}_Price']
-                        quarterly_data = quarterly_data.reset_index()
-                        
-                        # Create Quarter_Label to match strategy data format
-                        quarterly_data['Year'] = quarterly_data['Date'].dt.year
-                        quarterly_data['Quarter'] = quarterly_data['Date'].dt.quarter
-                        quarterly_data['Quarter_Label'] = quarterly_data['Year'].astype(str) + 'Q' + quarterly_data['Quarter'].astype(str)
-                        
-                        # Calculate quarterly returns
-                        quarterly_data[f'{ticker}_Return'] = quarterly_data[f'{ticker}_Price'].pct_change() * 100
-                        
-                        # Create final format expected by portfolio calculation
-                        stock_returns = quarterly_data[['Quarter_Label', f'{ticker}_Return']].copy()
-                        stock_returns.columns = ['Quarter', 'Return']
-                        
-                        stock_data[ticker] = stock_returns
-                except Exception as e:
-                    st.error(f"Error fetching {ticker} data from SSI API: {str(e)}")
-                    st.error(f"Exception details: {type(e).__name__}: {str(e)}")
+        # Load data from CSV file
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        csv_file = os.path.join(script_dir, 'data', 'raw_stock_price.csv')
         
-        # If SSI API failed or not available, return empty data
+        if not os.path.exists(csv_file):
+            st.error(f"❌ CSV file not found: {csv_file}")
+            return {}
+        
+        # Read the CSV file
+        df = pd.read_csv(csv_file)
+        
+        # Convert timestamp to datetime
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        
+        # Filter for gas stocks only (since this is gas strategy)
+        gas_df = df[df['type'] == 'gas'].copy()
+        
+        # Filter for requested symbols and date range
+        available_symbols = gas_df['symbol'].unique()
+        requested_symbols = [symbol for symbol in tickers if symbol in available_symbols]
+        
+        if not requested_symbols:
+            st.warning(f"❌ No gas stocks found in CSV for symbols: {tickers}")
+            return {}
+        
+        # Filter by date range
+        start_date = pd.to_datetime(f"{start_year}-01-01")
+        end_date = pd.to_datetime(f"{end_year}-12-31")
+        gas_df = gas_df[(gas_df['timestamp'] >= start_date) & (gas_df['timestamp'] <= end_date)]
+        
+        # Process each stock
+        for ticker in requested_symbols:
+            try:
+                ticker_data = gas_df[gas_df['symbol'] == ticker].copy()
+                
+                if not ticker_data.empty:
+                    # Sort by date and set as index for resampling
+                    ticker_data = ticker_data.sort_values('timestamp')
+                    ticker_data = ticker_data.set_index('timestamp')
+                    
+                    # Resample to quarterly using last price of quarter (quarter-end)
+                    quarterly_data = ticker_data['close'].resample('Q').last().to_frame()
+                    quarterly_data.columns = [f'{ticker}_Price']
+                    quarterly_data = quarterly_data.reset_index()
+                    
+                    # Create Quarter_Label to match strategy data format
+                    quarterly_data['Year'] = quarterly_data['timestamp'].dt.year
+                    quarterly_data['Quarter'] = quarterly_data['timestamp'].dt.quarter
+                    quarterly_data['Quarter_Label'] = quarterly_data['Year'].astype(str) + 'Q' + quarterly_data['Quarter'].astype(str)
+                    
+                    # Calculate quarterly returns
+                    quarterly_data[f'{ticker}_Return'] = quarterly_data[f'{ticker}_Price'].pct_change() * 100
+                    
+                    # Create final format expected by portfolio calculation
+                    stock_returns = quarterly_data[['Quarter_Label', f'{ticker}_Return']].copy()
+                    stock_returns.columns = ['Quarter', 'Return']
+                    
+                    # Remove NaN values (first row will have NaN return)
+                    stock_returns = stock_returns.dropna()
+                    
+                    stock_data[ticker] = stock_returns
+                    
+            except Exception as e:
+                st.warning(f"Could not process data for {ticker}: {e}")
+                continue
+        
         if not stock_data:
-            st.error("❌ Failed to fetch any real stock data. SSI API may be unavailable.")
+            st.error("❌ Failed to load any stock data from CSV")
+        else:
+            st.success(f"✅ Loaded data for {len(stock_data)} gas stocks from CSV")
             
         return stock_data
         
@@ -354,8 +418,9 @@ def calculate_portfolio_returns(strategy_df, stock_data):
         if strategy_df is None or not stock_data:
             return None
             
-        # Merge strategy data with stock returns
-        returns_df = strategy_df[['Quarter_Label', 'POW_Weight', 'NT2_Weight', 'Portfolio_Decision']].copy()
+        # Merge strategy data with stock returns and volume growth data
+        returns_df = strategy_df[['Quarter_Label', 'POW_Weight', 'NT2_Weight', 'Portfolio_Decision', 
+                                   'POW_YoY_Growth', 'NT2_YoY_Growth']].copy()
         
         # Add stock returns
         if 'POW' in stock_data and 'NT2' in stock_data:
@@ -377,16 +442,46 @@ def calculate_portfolio_returns(strategy_df, stock_data):
             returns_df['Equal_Weight_Return'] = (0.5 * returns_df['POW_Return'] + 
                                                0.5 * returns_df['NT2_Return'])
             
-            # NEW: Calculate "Best Growth" portfolio - 100% in stock with higher quarterly return
-            returns_df['Best_Growth_Return'] = 0.0
+            # NEW: Calculate "Concentrated" portfolio - 100% in stock with higher contracted volume YoY growth
+            # This uses PREVIOUS quarter's volume growth to decide CURRENT quarter's allocation (forward-looking)
+            returns_df['Concentrated_Return'] = 0.0
+            returns_df['Concentrated_POW_Weight'] = 0.5  # Default
+            returns_df['Concentrated_NT2_Weight'] = 0.5  # Default
+            
             for i in range(len(returns_df)):
-                pow_ret = returns_df.iloc[i]['POW_Return']
-                nt2_ret = returns_df.iloc[i]['NT2_Return']
-                # Invest 100% in whichever stock has higher growth this quarter
-                if pow_ret >= nt2_ret:
-                    returns_df.iloc[i, returns_df.columns.get_loc('Best_Growth_Return')] = pow_ret
+                # For first quarter, use equal weight
+                if i == 0:
+                    returns_df.iloc[i, returns_df.columns.get_loc('Concentrated_Return')] = (
+                        0.5 * returns_df.iloc[i]['POW_Return'] + 
+                        0.5 * returns_df.iloc[i]['NT2_Return']
+                    )
+                    returns_df.iloc[i, returns_df.columns.get_loc('Concentrated_POW_Weight')] = 0.5
+                    returns_df.iloc[i, returns_df.columns.get_loc('Concentrated_NT2_Weight')] = 0.5
                 else:
-                    returns_df.iloc[i, returns_df.columns.get_loc('Best_Growth_Return')] = nt2_ret
+                    # Use previous quarter's volume growth to decide current quarter allocation
+                    prev_pow_growth = returns_df.iloc[i-1]['POW_YoY_Growth']
+                    prev_nt2_growth = returns_df.iloc[i-1]['NT2_YoY_Growth']
+                    
+                    # Select stock with higher volume growth from previous quarter
+                    if pd.notna(prev_pow_growth) and pd.notna(prev_nt2_growth):
+                        if prev_pow_growth >= prev_nt2_growth:
+                            # Invest 100% in POW based on previous quarter's higher growth
+                            returns_df.iloc[i, returns_df.columns.get_loc('Concentrated_Return')] = returns_df.iloc[i]['POW_Return']
+                            returns_df.iloc[i, returns_df.columns.get_loc('Concentrated_POW_Weight')] = 1.0
+                            returns_df.iloc[i, returns_df.columns.get_loc('Concentrated_NT2_Weight')] = 0.0
+                        else:
+                            # Invest 100% in NT2 based on previous quarter's higher growth
+                            returns_df.iloc[i, returns_df.columns.get_loc('Concentrated_Return')] = returns_df.iloc[i]['NT2_Return']
+                            returns_df.iloc[i, returns_df.columns.get_loc('Concentrated_POW_Weight')] = 0.0
+                            returns_df.iloc[i, returns_df.columns.get_loc('Concentrated_NT2_Weight')] = 1.0
+                    else:
+                        # If volume growth data not available, use equal weight
+                        returns_df.iloc[i, returns_df.columns.get_loc('Concentrated_Return')] = (
+                            0.5 * returns_df.iloc[i]['POW_Return'] + 
+                            0.5 * returns_df.iloc[i]['NT2_Return']
+                        )
+                        returns_df.iloc[i, returns_df.columns.get_loc('Concentrated_POW_Weight')] = 0.5
+                        returns_df.iloc[i, returns_df.columns.get_loc('Concentrated_NT2_Weight')] = 0.5
             
             # Load real VNI return data
             vni_data = load_vni_data()
@@ -406,7 +501,7 @@ def calculate_portfolio_returns(strategy_df, stock_data):
             # Calculate cumulative returns
             returns_df['Strategy_Cumulative'] = (1 + returns_df['Strategy_Return']/100).cumprod()
             returns_df['Equal_Weight_Cumulative'] = (1 + returns_df['Equal_Weight_Return']/100).cumprod()
-            returns_df['Best_Growth_Cumulative'] = (1 + returns_df['Best_Growth_Return']/100).cumprod()
+            returns_df['Concentrated_Cumulative'] = (1 + returns_df['Concentrated_Return']/100).cumprod()
             returns_df['VNI_Cumulative'] = (1 + returns_df['VNI_Return']/100).cumprod()
             
             return returns_df
@@ -415,6 +510,104 @@ def calculate_portfolio_returns(strategy_df, stock_data):
         
     except Exception as e:
         st.error(f"Error calculating portfolio returns: {str(e)}")
+        return None
+
+def export_gas_strategy_results(returns_df, strategy_df, filename='gas_strategy_results.csv'):
+    """Export gas strategy results to CSV file"""
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_path = os.path.join(script_dir, 'data', 'strategies_results', filename)
+        
+        if returns_df is None or returns_df.empty:
+            st.warning("⚠️ No portfolio returns data to export")
+            return None
+            
+        # Create comprehensive results DataFrame
+        results_data = []
+        
+        # Combine strategy decisions with returns
+        for _, row in returns_df.iterrows():
+            quarter = row['Quarter_Label']
+            
+            # Get strategy decision info from strategy_df
+            strategy_info = strategy_df[strategy_df['Quarter_Label'] == quarter]
+            decision = row.get('Portfolio_Decision', 'Unknown')
+            pow_weight = row.get('POW_Weight', 0)
+            nt2_weight = row.get('NT2_Weight', 0)
+            
+            # Create selected stocks string without percentages
+            if pow_weight == 1.0:
+                diversified_stocks = "POW"
+            elif nt2_weight == 1.0:
+                diversified_stocks = "NT2"
+            else:
+                diversified_stocks = "POW, NT2"
+            
+            # Add Diversified Portfolio (original strategy with 20% threshold)
+            results_data.append({
+                'strategy_type': 'diversified',
+                'quarter': quarter,
+                'selected_stocks': diversified_stocks,
+                'pow_weight': pow_weight,
+                'nt2_weight': nt2_weight,
+                'quarterly_return': row.get('Strategy_Return', 0),
+                'cumulative_return': (row.get('Strategy_Cumulative', 1) - 1) * 100,
+                'decision_basis': decision
+            })
+            
+            # Add Concentrated Portfolio (100% in stock with higher contracted volume growth from previous quarter)
+            concentrated_return = row.get('Concentrated_Return', 0)
+            concentrated_pow_weight = row.get('Concentrated_POW_Weight', 0.5)
+            concentrated_nt2_weight = row.get('Concentrated_NT2_Weight', 0.5)
+            
+            # Determine selected stock based on weights
+            if concentrated_pow_weight == 1.0:
+                concentrated_stock = "POW"
+                decision_basis = "POW Higher Volume Growth"
+            elif concentrated_nt2_weight == 1.0:
+                concentrated_stock = "NT2"
+                decision_basis = "NT2 Higher Volume Growth"
+            else:
+                concentrated_stock = "POW, NT2"
+                decision_basis = "Equal (First Quarter or Missing Data)"
+                
+            results_data.append({
+                'strategy_type': 'concentrated',
+                'quarter': quarter,
+                'selected_stocks': concentrated_stock,
+                'pow_weight': concentrated_pow_weight,
+                'nt2_weight': concentrated_nt2_weight,
+                'quarterly_return': concentrated_return,
+                'cumulative_return': (row.get('Concentrated_Cumulative', 1) - 1) * 100,
+                'decision_basis': decision_basis
+            })
+        
+        # Create DataFrame and save to CSV
+        if results_data:
+            results_df_export = pd.DataFrame(results_data)
+            results_df_export = results_df_export.sort_values(['strategy_type', 'quarter']).reset_index(drop=True)
+            results_df_export.to_csv(output_path, index=False)
+            
+            st.success(f"✅ Gas strategy results exported to: {output_path}")
+            st.info(f"📊 Exported {len(results_df_export)} records covering {results_df_export['strategy_type'].nunique()} portfolio strategies")
+            
+            # Show summary
+            strategy_summary = results_df_export.groupby('strategy_type').agg({
+                'quarter': 'count',
+                'quarterly_return': ['mean', 'std'],
+                'cumulative_return': 'last'
+            }).round(2)
+            
+            st.write("### Export Summary:")
+            st.dataframe(strategy_summary)
+            
+            return output_path
+        else:
+            st.warning("⚠️ No data to export")
+            return None
+            
+    except Exception as e:
+        st.error(f"❌ Error exporting results: {e}")
         return None
 
 def create_growth_line_chart(quarterly_df):
@@ -571,15 +764,15 @@ def plot_portfolio_performance(returns_df):
             )
         )
         
-        # NEW: Add Best Growth Portfolio
+        # Add Concentrated Portfolio (100% in stock with higher volume growth)
         fig.add_trace(
             go.Scatter(
                 x=returns_df['Quarter_Label'],
-                y=(returns_df['Best_Growth_Cumulative'] - 1) * 100,  # Convert to percentage starting from 0%
+                y=(returns_df['Concentrated_Cumulative'] - 1) * 100,  # Convert to percentage starting from 0%
                 mode='lines+markers',
-                name='Best Growth (100%)',
+                name='Concentrated (100%)',
                 line=dict(color='purple', width=2, dash='dash'),
-                hovertemplate='%{x}<br>Best Growth: %{y:.2f}%<extra></extra>'
+                hovertemplate='%{x}<br>Concentrated: %{y:.2f}%<extra></extra>'
             )
         )
         
@@ -640,6 +833,9 @@ def run_gas_strategy(pow_df=None, convert_to_excel=None, convert_to_csv=None, ta
         if returns_df is None:
             st.error("Could not calculate portfolio returns")
             return
+            
+        # Export strategy results to CSV
+        export_gas_strategy_results(returns_df, strategy_df)
         
         # Tab-specific content display
 
@@ -716,3 +912,6 @@ def run_gas_strategy(pow_df=None, convert_to_excel=None, convert_to_csv=None, ta
     except Exception as e:
         st.error(f"Error running gas strategy: {str(e)}")
         st.exception(e)
+
+if __name__ == "__main__":
+    run_gas_strategy()

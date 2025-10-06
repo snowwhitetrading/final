@@ -88,8 +88,10 @@ def load_enso_data():
                         quarter = int(quarter_str[0])
                         year_str = quarter_str[2:]
                         year = int(f"20{year_str}") if len(year_str) == 2 else int(year_str)
-                        month = quarter * 3 - 2  # Q1=1, Q2=4, Q3=7, Q4=10
-                        return pd.to_datetime(f"{year}-{month:02d}-01")
+                        # Use quarter-end dates to match the rest of the code
+                        month = quarter * 3  # Q1=3, Q2=6, Q3=9, Q4=12
+                        # Create date at end of quarter month
+                        return pd.to_datetime(f"{year}-{month:02d}-01") + pd.offsets.MonthEnd(0)
                     else:
                         return pd.to_datetime(quarter_str)
                 except:
@@ -183,7 +185,7 @@ def get_all_power_stocks():
     return sorted(list(all_stocks))
 
 def get_equal_weighted_portfolio_return():
-    """Get sector-weighted portfolio return: 50% Hydro / 25% Gas / 25% Coal using SSI API"""
+    """Get sector-weighted portfolio return: 50% Hydro / 25% Gas / 25% Coal using raw_stock_price.csv"""
     try:
         # Define sector stocks and weights
         hydro_stocks = ['REE', 'PC1', 'HDG', 'GEG', 'TTA', 'AVC', 'GHC', 'VPD', 'DRL', 'S4A', 'SBA', 'VSH', 'NED', 'TMP', 'HNA', 'SHP']
@@ -193,156 +195,116 @@ def get_equal_weighted_portfolio_return():
         # Sector weights: 50% Hydro, 25% Gas, 25% Coal
         sector_weights = {'hydro': 0.5, 'gas': 0.25, 'coal': 0.25}
         
-        all_stocks = hydro_stocks + gas_stocks + coal_stocks
+        # Load data from CSV file
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        csv_file = os.path.join(script_dir, 'data', 'raw_stock_price.csv')
         
-        if not all_stocks:
-            st.warning("No power stocks found, using VNI as proxy")
-            return load_vni_data()
+        if not os.path.exists(csv_file):
+            st.error(f"❌ CSV file not found: {csv_file}")
+            return pd.DataFrame()
         
-        # Try to get stock data using SSI API
-        try:
-            # Try importing ssi_api with different methods
-            ssi_module = None
-            try:
-                from . import ssi_api
-                ssi_module = ssi_api
-            except ImportError:
+        # Read the CSV file
+        df = pd.read_csv(csv_file)
+        
+        # Convert timestamp to datetime
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        
+        # Filter by date range (2011 onwards)
+        start_date = pd.to_datetime('2011-01-01')
+        df = df[df['timestamp'] >= start_date].copy()
+        
+        # Create sector-based quarterly returns
+        sector_returns = {'hydro': {}, 'gas': {}, 'coal': {}}
+        
+        # Process each stock by sector
+        all_symbols = hydro_stocks + gas_stocks + coal_stocks
+        
+        for symbol in all_symbols:
+            symbol_data = df[df['symbol'] == symbol].copy()
+            
+            if not symbol_data.empty:
+                # Sort by date and set as index for resampling
+                symbol_data = symbol_data.sort_values('timestamp')
+                symbol_data = symbol_data.set_index('timestamp')
+                
+                # Resample to quarterly using last price of quarter
+                quarterly_data = symbol_data['close'].resample('Q').last().to_frame()
+                quarterly_data = quarterly_data.reset_index()
+                
+                # Create period labels
+                quarterly_data['Year'] = quarterly_data['timestamp'].dt.year
+                quarterly_data['Quarter'] = quarterly_data['timestamp'].dt.quarter
+                quarterly_data['period'] = quarterly_data['Year'].astype(str) + 'Q' + quarterly_data['Quarter'].astype(str)
+                
+                # Calculate quarterly returns
+                quarterly_data['quarterly_return'] = quarterly_data['close'].pct_change() * 100
+                quarterly_data['quarterly_return'] = quarterly_data['quarterly_return'].fillna(0)
+                
+                # Determine sector
+                if symbol in hydro_stocks:
+                    sector = 'hydro'
+                elif symbol in gas_stocks:
+                    sector = 'gas'
+                elif symbol in coal_stocks:
+                    sector = 'coal'
+                else:
+                    continue
+                
+                # Store returns by period
+                for _, row in quarterly_data.iterrows():
+                    period = row['period']
+                    if period not in sector_returns[sector]:
+                        sector_returns[sector][period] = {}
+                    sector_returns[sector][period][symbol] = row['quarterly_return']
+        
+        # Calculate sector-weighted portfolio returns
+        result_data = []
+        all_periods = set()
+        for sector in sector_returns:
+            all_periods.update(sector_returns[sector].keys())
+        
+        for period in sorted(all_periods):
+            sector_weighted_return = 0
+            
+            for sector_name, weight in sector_weights.items():
+                if period in sector_returns[sector_name]:
+                    period_data = sector_returns[sector_name][period]
+                    if period_data:
+                        # Calculate equal weight return within sector
+                        sector_return = sum(period_data.values()) / len(period_data)
+                        # Apply sector weight
+                        sector_weighted_return += weight * sector_return
+            
+            result_data.append({
+                'period': period,
+                'Quarter_Return': sector_weighted_return
+            })
+        
+        if result_data:
+            result_df = pd.DataFrame(result_data)
+            
+            # Convert period to date
+            def period_to_date(period_str):
                 try:
-                    import ssi_api
-                    ssi_module = ssi_api
-                except ImportError:
-                    # Try importing as module in current directory
-                    import sys
-                    import os
-                    sys.path.append(os.path.dirname(__file__))
-                    try:
-                        import ssi_api
-                        ssi_module = ssi_api
-                    except ImportError:
-                        ssi_module = None
+                    year = int(period_str[:4])
+                    quarter = int(period_str[5])
+                    month = quarter * 3
+                    return pd.to_datetime(f"{year}-{month:02d}-01") + pd.offsets.MonthEnd(0)
+                except:
+                    return pd.to_datetime('2011-01-01')
             
-            if ssi_module and hasattr(ssi_module, 'get_quarterly_stock_data'):
-                # Get quarterly stock data from 2011 to 2025
-                stock_data = ssi_module.get_quarterly_stock_data(all_stocks, '2011-01-01', '2025-06-30')
+            result_df['date'] = result_df['period'].apply(period_to_date)
+            result_df = result_df.set_index('date')
+            result_df = result_df.sort_index()
             
-            if stock_data and isinstance(stock_data, dict) and len(stock_data) > 0:
-                # Create sector-based quarterly returns
-                sector_returns = {'hydro': {}, 'gas': {}, 'coal': {}}
-                
-                for symbol in stock_data.keys():
-                    df = stock_data[symbol]
-                    if df is not None and not df.empty and 'close' in df.columns:
-                        try:
-                            # Make a copy to avoid modifying original data
-                            df = df.copy()
-                            
-                            # Ensure date column is datetime
-                            df['date'] = pd.to_datetime(df['date'])
-                            df = df.sort_values('date')
-                            
-                            # Calculate quarterly returns
-                            df['quarterly_return'] = df['close'].pct_change() * 100
-                            df['quarterly_return'] = df['quarterly_return'].fillna(0)
-                            
-                            # Create period labels safely
-                            def create_period_label(date_val):
-                                try:
-                                    if hasattr(date_val, 'year') and hasattr(date_val, 'month'):
-                                        return f"{date_val.year}Q{(date_val.month-1)//3 + 1}"
-                                    else:
-                                        return None
-                                except:
-                                    return None
-                            
-                            df['period'] = df['date'].apply(create_period_label)
-                            
-                            # Determine which sector this stock belongs to
-                            sector = None
-                            if symbol in hydro_stocks:
-                                sector = 'hydro'
-                            elif symbol in gas_stocks:
-                                sector = 'gas'
-                            elif symbol in coal_stocks:
-                                sector = 'coal'
-                            
-                            if sector:
-                                # Store quarterly returns by sector
-                                for _, row in df.iterrows():
-                                    period = row['period']
-                                    # Ensure period is a string, not a list or other type
-                                    if isinstance(period, (list, tuple)):
-                                        period = str(period[0]) if period else None
-                                    elif period is not None:
-                                        period = str(period)
-                                        
-                                    if period and period not in sector_returns[sector]:
-                                        sector_returns[sector][period] = {}
-                                    if period:
-                                        sector_returns[sector][period][symbol] = float(row['quarterly_return'])
-                        except Exception as e:
-                            st.warning(f"Error processing {symbol}: {e}")
-                            continue
-                
-                # Calculate sector-weighted portfolio returns
-                result_data = []
-                all_periods = set()
-                for sector in sector_returns:
-                    all_periods.update(sector_returns[sector].keys())
-                
-                for period in sorted(all_periods):
-                    sector_weighted_return = 0
-                    
-                    for sector_name, weight in sector_weights.items():
-                        if period in sector_returns[sector_name]:
-                            period_data = sector_returns[sector_name][period]
-                            if period_data:
-                                # Calculate equal weight return within sector
-                                sector_return = sum(period_data.values()) / len(period_data)
-                                # Apply sector weight
-                                sector_weighted_return += weight * sector_return
-                    
-                    result_data.append({
-                        'period': period,
-                        'Quarter_Return': sector_weighted_return
-                    })
-                    
-                if result_data:
-                    result_df = pd.DataFrame(result_data)
-                    
-                    # Convert period to date
-                    def period_to_date(period_str):
-                        try:
-                            year = int(period_str[:4])
-                            quarter = int(period_str[5])
-                            month = quarter * 3
-                            return pd.to_datetime(f"{year}-{month:02d}-01") + pd.offsets.MonthEnd(0)
-                        except:
-                            return pd.to_datetime('2011-01-01')
-                    
-                    result_df['date'] = result_df['period'].apply(period_to_date)
-                    result_df = result_df.set_index('date')
-                    result_df = result_df.sort_index()
-                    
-                    # Calculate cumulative returns
-                    result_df['Cumulative_Return'] = (1 + result_df['Quarter_Return']/100).cumprod() * 100 - 100
-                    
-                    st.success(f"✅ Loaded sector-weighted portfolio (50% Hydro, 25% Gas, 25% Coal) with {len(all_stocks)} stocks, {len(result_df)} quarters")
-                    return result_df
-                        
-        except ImportError:
-            st.warning("SSI API not available, using VNI as proxy")
-        except Exception as e:
-            st.warning(f"Error getting stock data from SSI: {e}")
-        
-        # Fallback: Use VNI data as proxy for equal weighted portfolio
-        vni_df = load_vni_data()
-        if not vni_df.empty:
-            st.info("Using VNI data as proxy for equally weighted power portfolio")
-            return vni_df.copy()
-        
-        # Last resort: return empty DataFrame
-        st.error("No data available for equally weighted portfolio")
-        return pd.DataFrame()
+            # Calculate cumulative returns
+            result_df['Cumulative_Return'] = (1 + result_df['Quarter_Return']/100).cumprod() * 100 - 100
+            
+            st.success(f"✅ Loaded sector-weighted portfolio (50% Hydro, 25% Gas, 25% Coal) from CSV with {len(result_df)} quarters")
+            return result_df
+        else:
+            st.error("No data available for equally weighted portfolio")
+            return pd.DataFrame()
             
     except Exception as e:
         st.error(f"Error creating equally weighted portfolio: {e}")
@@ -601,7 +563,7 @@ def get_coal_volume_growth_return():
         return pd.DataFrame()
 
 def calculate_oni_based_strategy(enso_df=None):
-    """Calculate ONI-based strategy using equal weighted portfolios for each sector"""
+    """Calculate ONI-based strategy using equal weighted portfolios for each sector from raw_stock_price.csv"""
     try:
         # Load ENSO data if not provided
         if enso_df is None or enso_df.empty:
@@ -612,110 +574,95 @@ def calculate_oni_based_strategy(enso_df=None):
             return pd.DataFrame()
         
         # Get equal weighted portfolio for each sector
-        st.info("Loading equal weighted portfolio data for ONI strategy...")
+        st.info("Loading equal weighted portfolio data for ONI strategy from CSV...")
         
         # Define sector stocks for equal weighted portfolios
         hydro_stocks = ['REE', 'PC1', 'HDG', 'GEG', 'TTA', 'AVC', 'GHC', 'VPD', 'DRL', 'S4A', 'SBA', 'VSH', 'NED', 'TMP', 'HNA', 'SHP']
         gas_stocks = ['POW', 'NT2']
         coal_stocks = ['QTP', 'PPC', 'HND']
         
+        # Load data from CSV file
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        csv_file = os.path.join(script_dir, 'data', 'raw_stock_price.csv')
+        
+        if not os.path.exists(csv_file):
+            st.error(f"❌ CSV file not found: {csv_file}")
+            return pd.DataFrame()
+        
+        # Read the CSV file
+        df = pd.read_csv(csv_file)
+        
+        # Convert timestamp to datetime
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        
+        # Filter by date range (2011 onwards)
+        start_date = pd.to_datetime('2011-01-01')
+        df = df[df['timestamp'] >= start_date].copy()
+        
+        # Calculate returns for each sector
+        sector_returns = {}
+        
+        for sector_name, stocks in [('hydro', hydro_stocks), ('gas', gas_stocks), ('coal', coal_stocks)]:
+            quarterly_returns = {}
+            
+            for symbol in stocks:
+                symbol_data = df[df['symbol'] == symbol].copy()
+                
+                if not symbol_data.empty:
+                    # Sort by date and set as index for resampling
+                    symbol_data = symbol_data.sort_values('timestamp')
+                    symbol_data = symbol_data.set_index('timestamp')
+                    
+                    # Resample to quarterly using last price of quarter
+                    quarterly_data = symbol_data['close'].resample('Q').last().to_frame()
+                    quarterly_data = quarterly_data.reset_index()
+                    
+                    # Create period labels
+                    quarterly_data['Year'] = quarterly_data['timestamp'].dt.year
+                    quarterly_data['Quarter'] = quarterly_data['timestamp'].dt.quarter
+                    quarterly_data['period'] = quarterly_data['Year'].astype(str) + 'Q' + quarterly_data['Quarter'].astype(str)
+                    
+                    # Calculate quarterly returns
+                    quarterly_data['quarterly_return'] = quarterly_data['close'].pct_change() * 100
+                    quarterly_data['quarterly_return'] = quarterly_data['quarterly_return'].fillna(0)
+                    
+                    # Store returns by period
+                    for _, row in quarterly_data.iterrows():
+                        period = row['period']
+                        if period not in quarterly_returns:
+                            quarterly_returns[period] = {}
+                        quarterly_returns[period][symbol] = row['quarterly_return']
+            
+            # Calculate equal weighted returns for this sector
+            sector_data = []
+            for period in sorted(quarterly_returns.keys()):
+                period_data = quarterly_returns[period]
+                if period_data:
+                    equal_return = sum(period_data.values()) / len(period_data)
+                    sector_data.append({
+                        'period': period,
+                        'Quarter_Return': equal_return
+                    })
+            
+            if sector_data:
+                sector_df = pd.DataFrame(sector_data)
+                
+                def period_to_date(period_str):
+                    try:
+                        year = int(period_str[:4])
+                        quarter = int(period_str[5])
+                        month = quarter * 3
+                        return pd.to_datetime(f"{year}-{month:02d}-01") + pd.offsets.MonthEnd(0)
+                    except:
+                        return pd.to_datetime('2011-01-01')
+                
+                sector_df['date'] = sector_df['period'].apply(period_to_date)
+                sector_df = sector_df.set_index('date')
+                sector_returns[sector_name] = sector_df
+        
         # Create date range
-        date_range = pd.date_range('2011-01-01', '2025-06-30', freq='QE')
+        date_range = pd.date_range('2011-01-01', '2025-09-30', freq='QE')
         result_df = pd.DataFrame(index=date_range)
-        
-        # Get equal weighted returns for each sector using SSI API
-        try:
-            # Try importing ssi_api with different methods
-            ssi_module = None
-            try:
-                from . import ssi_api
-                ssi_module = ssi_api
-            except ImportError:
-                try:
-                    import ssi_api
-                    ssi_module = ssi_api
-                except ImportError:
-                    import sys
-                    import os
-                    sys.path.append(os.path.dirname(__file__))
-                    try:
-                        import ssi_api
-                        ssi_module = ssi_api
-                    except ImportError:
-                        ssi_module = None
-            
-            sector_returns = {}
-            
-            if ssi_module and hasattr(ssi_module, 'get_quarterly_stock_data'):
-                # Get quarterly returns for each sector
-                for sector_name, stocks in [('hydro', hydro_stocks), ('gas', gas_stocks), ('coal', coal_stocks)]:
-                    try:
-                        stock_data = ssi_module.get_quarterly_stock_data(stocks, '2011-01-01', '2025-06-30')
-                        
-                        if stock_data and isinstance(stock_data, dict) and len(stock_data) > 0:
-                            quarterly_returns = {}
-                            
-                            for symbol in stock_data.keys():
-                                df = stock_data[symbol]
-                                if df is not None and not df.empty and 'close' in df.columns:
-                                    try:
-                                        df = df.copy()
-                                        df['date'] = pd.to_datetime(df['date'])
-                                        df = df.sort_values('date')
-                                        df['quarterly_return'] = df['close'].pct_change() * 100
-                                        df['quarterly_return'] = df['quarterly_return'].fillna(0)
-                                        
-                                        def create_period_label(date_val):
-                                            try:
-                                                return f"{date_val.year}Q{(date_val.month-1)//3 + 1}"
-                                            except:
-                                                return None
-                                        
-                                        df['period'] = df['date'].apply(create_period_label)
-                                        
-                                        for _, row in df.iterrows():
-                                            period = row['period']
-                                            if period and period not in quarterly_returns:
-                                                quarterly_returns[period] = {}
-                                            if period:
-                                                quarterly_returns[period][symbol] = float(row['quarterly_return'])
-                                    except Exception as e:
-                                        continue
-                            
-                            # Calculate equal weighted returns for this sector
-                            sector_data = []
-                            for period in sorted(quarterly_returns.keys()):
-                                period_data = quarterly_returns[period]
-                                if period_data:
-                                    equal_return = sum(period_data.values()) / len(period_data)
-                                    sector_data.append({
-                                        'period': period,
-                                        'Quarter_Return': equal_return
-                                    })
-                            
-                            if sector_data:
-                                sector_df = pd.DataFrame(sector_data)
-                                def period_to_date(period_str):
-                                    try:
-                                        year = int(period_str[:4])
-                                        quarter = int(period_str[5])
-                                        month = quarter * 3
-                                        return pd.to_datetime(f"{year}-{month:02d}-01") + pd.offsets.MonthEnd(0)
-                                    except:
-                                        return pd.to_datetime('2011-01-01')
-                                
-                                sector_df['date'] = sector_df['period'].apply(period_to_date)
-                                sector_df = sector_df.set_index('date')
-                                sector_returns[sector_name] = sector_df
-                                
-                    except Exception as e:
-                        st.warning(f"Error getting {sector_name} sector data: {e}")
-                        continue
-            else:
-                st.warning("SSI API not available for ONI strategy")
-        
-        except Exception as e:
-            st.warning(f"Error loading sector data: {e}")
         
         # Calculate ONI strategy returns
         returns = []
@@ -766,11 +713,11 @@ def calculate_oni_based_strategy(enso_df=None):
                         coal_ret = ret
             
             # Apply ONI-based allocation strategy
-            if oni_val > 0.3:
-                # ONI > 0.3: invest 50%/50% in coal/gas equally
+            if oni_val > 0.5:
+                # ONI > 0.5: invest 50%/50% in coal/gas equally
                 weighted_return = 0.5 * gas_ret + 0.5 * coal_ret
-            elif oni_val < -0.3:
-                # ONI < -0.3: invest 100% in hydro equal weighted portfolio
+            elif oni_val < -0.5:
+                # ONI < -0.5: invest 100% in hydro equal weighted portfolio
                 weighted_return = hydro_ret
             else:
                 # -0.5 <= ONI <= 0.5: invest 50%/25%/25% in hydro/coal/gas
@@ -781,7 +728,7 @@ def calculate_oni_based_strategy(enso_df=None):
         result_df['Quarter_Return'] = returns
         result_df['Cumulative_Return'] = (1 + result_df['Quarter_Return']/100).cumprod() * 100 - 100
         
-        st.success(f"✅ Calculated ONI strategy with {len(result_df)} quarters")
+        st.success(f"✅ Calculated ONI strategy from CSV with {len(result_df)} quarters")
         return result_df
         
     except Exception as e:
@@ -789,7 +736,7 @@ def calculate_oni_based_strategy(enso_df=None):
         return pd.DataFrame()
 
 def calculate_alpha_strategy(enso_df=None):
-    """Calculate Alpha strategy with timeline implementation and ONI conditions using real data"""
+    """Calculate Alpha strategy using strategy results CSV files"""
     try:
         # Load ENSO data for ONI values if not provided
         if enso_df is None or enso_df.empty:
@@ -799,18 +746,55 @@ def calculate_alpha_strategy(enso_df=None):
             st.error("No ENSO data available for Alpha strategy")
             return pd.DataFrame()
         
-        # Get portfolio components
-        st.info("Loading portfolio data for Alpha strategy...")
-        equal_weighted = get_equal_weighted_portfolio_return()
-        hydro_data = get_hydro_flood_portfolio_return()
-        gas_data = get_gas_contracted_volume_return()
-        coal_data = get_coal_volume_growth_return()
+        # Load strategy results from CSV files
+        st.info("Loading strategy results from CSV files for Alpha strategy...")
+        script_dir = os.path.dirname(os.path.abspath(__file__))
         
-        # Also get ONI strategy for before 1Q2019 (Alpha = ONI rule)
+        # Load hydro strategy results (flood_level portfolio)
+        hydro_file = os.path.join(script_dir, 'data', 'strategies_results', 'hydro_strategy_results.csv')
+        hydro_df = pd.read_csv(hydro_file)
+        hydro_df = hydro_df[hydro_df['strategy_type'] == 'flood_level'].copy()
+        
+        # Load gas strategy results (concentrated portfolio)
+        gas_file = os.path.join(script_dir, 'data', 'strategies_results', 'gas_strategy_results.csv')
+        gas_df = pd.read_csv(gas_file)
+        gas_df = gas_df[gas_df['strategy_type'] == 'concentrated'].copy()
+        
+        # Load coal strategy results (concentrated portfolio)
+        coal_file = os.path.join(script_dir, 'data', 'strategies_results', 'coal_strategy_results.csv')
+        coal_df = pd.read_csv(coal_file)
+        coal_df = coal_df[coal_df['strategy_type'] == 'concentrated'].copy()
+        
+        # Convert period to datetime for matching
+        def period_to_date(period_str):
+            try:
+                if 'Q' in str(period_str):
+                    year = int(period_str[:4])
+                    quarter = int(period_str[5])
+                    month = quarter * 3
+                    return pd.to_datetime(f"{year}-{month:02d}-01") + pd.offsets.MonthEnd(0)
+                else:
+                    return pd.to_datetime(period_str)
+            except:
+                return pd.NaT
+        
+        hydro_df['date'] = hydro_df['period'].apply(period_to_date)
+        gas_df['date'] = gas_df['quarter'].apply(period_to_date)
+        coal_df['date'] = coal_df['period'].apply(period_to_date)
+        
+        # Set as index
+        hydro_df = hydro_df.set_index('date')
+        gas_df = gas_df.set_index('date')
+        coal_df = coal_df.set_index('date')
+        
+        # Get equal weighted portfolio for before 1Q2019 and fallback
+        equal_weighted = get_equal_weighted_portfolio_return()
+        
+        # Get ONI strategy for before 1Q2019
         oni_strategy = calculate_oni_based_strategy(enso_df)
         
-        # Create quarterly date range from 1Q2011 to 2Q2025
-        date_range = pd.date_range('2011-01-01', '2025-06-30', freq='QE')
+        # Create quarterly date range from 1Q2011 to 3Q2025
+        date_range = pd.date_range('2011-01-01', '2025-09-30', freq='QE')
         result_df = pd.DataFrame(index=date_range)
         
         returns = []
@@ -825,7 +809,7 @@ def calculate_alpha_strategy(enso_df=None):
                 returns.append(quarterly_return)
                 continue
             
-            # From 1Q2019 onwards: Use complex Alpha strategy
+            # From 1Q2019 onwards: Use complex Alpha strategy with CSV data
             # Get ONI value for this quarter
             oni_val = 0
             year = date.year
@@ -847,91 +831,88 @@ def calculate_alpha_strategy(enso_df=None):
                 if abs((closest_date - date).days) < 100:
                     oni_val = enso_df.loc[closest_date, 'ONI'] if 'ONI' in enso_df.columns else 0
             
-            # Apply Alpha strategy based on ONI conditions and timeline
+            # Apply Alpha strategy based on ONI conditions
             quarterly_return = 0
             
-            if oni_val > 0.3:
-                # ONI > 0.3: invest 50% in gas and 50% in coal
-                # From 1Q2019 onwards: use specialized portfolios
+            if oni_val > 0.5:
+                # ONI > 0.5: invest 50% in gas and 50% in coal
                 gas_ret = 0
                 coal_ret = 0
                 
-                # Get gas return using specialized portfolio (gas_strategy.py result)
-                if not gas_data.empty and 'Quarter_Return' in gas_data.columns:
-                    if date in gas_data.index:
-                        gas_ret = gas_data.loc[date, 'Quarter_Return']
-                    else:
-                        closest_gas = min(gas_data.index, key=lambda x: abs((x - date).days))
-                        if abs((closest_gas - date).days) < 100:
-                            gas_ret = gas_data.loc[closest_gas, 'Quarter_Return']
+                # Get gas return from CSV
+                if date in gas_df.index:
+                    gas_ret = gas_df.loc[date, 'quarterly_return']
+                else:
+                    closest_gas = min(gas_df.index, key=lambda x: abs((x - date).days)) if not gas_df.empty else None
+                    if closest_gas and abs((closest_gas - date).days) < 100:
+                        gas_ret = gas_df.loc[closest_gas, 'quarterly_return']
                 
-                # Get coal return using specialized portfolio (coal_strategy.py result)
-                if not coal_data.empty and 'Quarter_Return' in coal_data.columns:
-                    if date in coal_data.index:
-                        coal_ret = coal_data.loc[date, 'Quarter_Return']
-                    else:
-                        closest_coal = min(coal_data.index, key=lambda x: abs((x - date).days))
-                        if abs((closest_coal - date).days) < 100:
-                            coal_ret = coal_data.loc[closest_coal, 'Quarter_Return']
+                # Get coal return from CSV
+                if date in coal_df.index:
+                    coal_ret = coal_df.loc[date, 'quarterly_return']
+                else:
+                    closest_coal = min(coal_df.index, key=lambda x: abs((x - date).days)) if not coal_df.empty else None
+                    if closest_coal and abs((closest_coal - date).days) < 100:
+                        coal_ret = coal_df.loc[closest_coal, 'quarterly_return']
                 
                 quarterly_return = 0.5 * gas_ret + 0.5 * coal_ret
                     
-            elif oni_val < -0.3:
-                # ONI < -0.3: invest 100% in hydro
+            elif oni_val < -0.5:
+                # ONI < -0.5: invest 100% in hydro
                 if date < pd.to_datetime('2020-04-01'):
                     # 1Q2011 to 1Q2020: use equally weighted portfolio
-                    if not equal_weighted.empty and i < len(equal_weighted) and 'Quarter_Return' in equal_weighted.columns:
+                    if not equal_weighted.empty and date in equal_weighted.index:
+                        quarterly_return = equal_weighted.loc[date, 'Quarter_Return']
+                    elif not equal_weighted.empty and i < len(equal_weighted):
                         quarterly_return = equal_weighted.iloc[i]['Quarter_Return']
                 else:
-                    # 2Q2020 onwards: use hydro flood level portfolio (hydro_strategy.py result)
-                    if not hydro_data.empty and 'Quarter_Return' in hydro_data.columns:
-                        if date in hydro_data.index:
-                            quarterly_return = hydro_data.loc[date, 'Quarter_Return']
-                        else:
-                            closest_hydro = min(hydro_data.index, key=lambda x: abs((x - date).days))
-                            if abs((closest_hydro - date).days) < 100:
-                                quarterly_return = hydro_data.loc[closest_hydro, 'Quarter_Return']
+                    # 2Q2020 onwards: use hydro flood level portfolio from CSV
+                    if date in hydro_df.index:
+                        quarterly_return = hydro_df.loc[date, 'quarterly_return']
+                    else:
+                        closest_hydro = min(hydro_df.index, key=lambda x: abs((x - date).days)) if not hydro_df.empty else None
+                        if closest_hydro and abs((closest_hydro - date).days) < 100:
+                            quarterly_return = hydro_df.loc[closest_hydro, 'quarterly_return']
                         
             else:
-                # -0.5 <= ONI <= 0.5: invest 50%/25%/25% in hydro/coal/gas
+                # -0.5 <= ONI <= 0.5: invest 50%/25%/25% in hydro/gas/coal
                 hydro_ret = 0
                 gas_ret = 0
                 coal_ret = 0
                 
-                # Get gas return using specialized portfolio
-                if not gas_data.empty and 'Quarter_Return' in gas_data.columns:
-                    if date in gas_data.index:
-                        gas_ret = gas_data.loc[date, 'Quarter_Return']
-                    else:
-                        closest_gas = min(gas_data.index, key=lambda x: abs((x - date).days))
-                        if abs((closest_gas - date).days) < 100:
-                            gas_ret = gas_data.loc[closest_gas, 'Quarter_Return']
+                # Get gas return from CSV
+                if date in gas_df.index:
+                    gas_ret = gas_df.loc[date, 'quarterly_return']
+                else:
+                    closest_gas = min(gas_df.index, key=lambda x: abs((x - date).days)) if not gas_df.empty else None
+                    if closest_gas and abs((closest_gas - date).days) < 100:
+                        gas_ret = gas_df.loc[closest_gas, 'quarterly_return']
                 
-                # Get coal return using specialized portfolio
-                if not coal_data.empty and 'Quarter_Return' in coal_data.columns:
-                    if date in coal_data.index:
-                        coal_ret = coal_data.loc[date, 'Quarter_Return']
-                    else:
-                        closest_coal = min(coal_data.index, key=lambda x: abs((x - date).days))
-                        if abs((closest_coal - date).days) < 100:
-                            coal_ret = coal_data.loc[closest_coal, 'Quarter_Return']
+                # Get coal return from CSV
+                if date in coal_df.index:
+                    coal_ret = coal_df.loc[date, 'quarterly_return']
+                else:
+                    closest_coal = min(coal_df.index, key=lambda x: abs((x - date).days)) if not coal_df.empty else None
+                    if closest_coal and abs((closest_coal - date).days) < 100:
+                        coal_ret = coal_df.loc[closest_coal, 'quarterly_return']
                 
-                # For hydro: use specialized data from 2Q2020, equal weighted before
+                # For hydro: use CSV data from 2Q2020, equal weighted before
                 if date >= pd.to_datetime('2020-04-01'):
-                    # Use hydro flood level portfolio
-                    if not hydro_data.empty and 'Quarter_Return' in hydro_data.columns:
-                        if date in hydro_data.index:
-                            hydro_ret = hydro_data.loc[date, 'Quarter_Return']
-                        else:
-                            closest_hydro = min(hydro_data.index, key=lambda x: abs((x - date).days))
-                            if abs((closest_hydro - date).days) < 100:
-                                hydro_ret = hydro_data.loc[closest_hydro, 'Quarter_Return']
+                    # Use hydro flood level portfolio from CSV
+                    if date in hydro_df.index:
+                        hydro_ret = hydro_df.loc[date, 'quarterly_return']
+                    else:
+                        closest_hydro = min(hydro_df.index, key=lambda x: abs((x - date).days)) if not hydro_df.empty else None
+                        if closest_hydro and abs((closest_hydro - date).days) < 100:
+                            hydro_ret = hydro_df.loc[closest_hydro, 'quarterly_return']
                 else:
                     # Before 2Q2020, use equal weighted for hydro portion
-                    if not equal_weighted.empty and i < len(equal_weighted) and 'Quarter_Return' in equal_weighted.columns:
+                    if not equal_weighted.empty and date in equal_weighted.index:
+                        hydro_ret = equal_weighted.loc[date, 'Quarter_Return']
+                    elif not equal_weighted.empty and i < len(equal_weighted):
                         hydro_ret = equal_weighted.iloc[i]['Quarter_Return']
                 
-                quarterly_return = 0.5 * hydro_ret + 0.25 * coal_ret + 0.25 * gas_ret
+                quarterly_return = 0.5 * hydro_ret + 0.25 * gas_ret + 0.25 * coal_ret
             
             returns.append(quarterly_return)
         
@@ -939,15 +920,13 @@ def calculate_alpha_strategy(enso_df=None):
         result_df['Quarter_Return'] = returns
         result_df['Cumulative_Return'] = (1 + result_df['Quarter_Return']/100).cumprod() * 100 - 100
         
-        st.success(f"✅ Calculated Alpha strategy with {len(result_df)} quarters (Alpha = ONI before 1Q2019)")
+        st.success(f"✅ Calculated Alpha strategy from CSV files with {len(result_df)} quarters")
         return result_df
         
     except Exception as e:
         st.error(f"Error calculating Alpha strategy: {e}")
-        return pd.DataFrame()
-            
-    except Exception as e:
-        st.error(f"Error calculating Alpha strategy: {e}")
+        import traceback
+        st.error(traceback.format_exc())
         return pd.DataFrame()
 
 def create_comprehensive_strategy_comparison(enso_df=None):
@@ -966,7 +945,7 @@ def create_comprehensive_strategy_comparison(enso_df=None):
         alpha_data = calculate_alpha_strategy()
         
         # Create unified DataFrame
-        date_range = pd.date_range('2011-01-01', '2025-06-30', freq='QE')
+        date_range = pd.date_range('2011-01-01', '2025-09-30', freq='QE')
         
         unified_df = pd.DataFrame(index=date_range)
         # Convert to string format for better chart compatibility
@@ -1038,6 +1017,8 @@ def create_comprehensive_strategy_comparison(enso_df=None):
         if not unified_df.empty:
             try:
                 export_strategy_comparison_to_csv(unified_df)
+                # Also export stock weights
+                export_stock_weights_to_csv(enso_df)
             except Exception as export_error:
                 print(f"Auto-export failed: {export_error}")
         
@@ -1106,6 +1087,492 @@ def export_strategy_comparison_to_csv(unified_df):
         return False
 
 
+def export_stock_weights_to_csv(enso_df=None):
+    """Export detailed stock weights for all strategies to stock_weights.csv
+    
+    Columns: symbol, period, strategy, weight
+    """
+    try:
+        print("🔄 Generating stock weights CSV...")
+        
+        # Load ENSO data if not provided
+        if enso_df is None or enso_df.empty:
+            enso_df = load_enso_data()
+        
+        if enso_df.empty:
+            print("❌ No ENSO data available for stock weights export")
+            return False
+        
+        # Ensure enso_df has datetime index (load_enso_data returns it with datetime index)
+        # If it doesn't have datetime index, convert it
+        if not isinstance(enso_df.index, pd.DatetimeIndex):
+            if 'date' in enso_df.columns:
+                enso_df = enso_df.set_index('date')
+            enso_df.index = pd.to_datetime(enso_df.index)
+        
+        # Load strategy results from CSV files
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Load hydro strategy results
+        hydro_file = os.path.join(script_dir, 'data', 'strategies_results', 'hydro_strategy_results.csv')
+        hydro_df = pd.read_csv(hydro_file)
+        
+        # Load gas strategy results
+        gas_file = os.path.join(script_dir, 'data', 'strategies_results', 'gas_strategy_results.csv')
+        gas_df = pd.read_csv(gas_file)
+        
+        # Load coal strategy results
+        coal_file = os.path.join(script_dir, 'data', 'strategies_results', 'coal_strategy_results.csv')
+        coal_df = pd.read_csv(coal_file)
+        
+        # Define stock lists
+        hydro_stocks = ['REE', 'PC1', 'HDG', 'GEG', 'TTA', 'AVC', 'GHC', 'VPD', 'DRL', 'S4A', 'SBA', 'VSH', 'NED', 'TMP', 'HNA', 'SHP']
+        gas_stocks = ['POW', 'NT2']
+        coal_stocks = ['QTP', 'PPC', 'HND']
+        
+        # Create date range from 1Q2011 to 3Q2025
+        date_range = pd.date_range('2011-01-01', '2025-09-30', freq='QE')
+        
+        # Storage for all weight records
+        weight_records = []
+        
+        # Process each quarter
+        for date in date_range:
+            year = date.year
+            quarter = (date.month - 1) // 3 + 1
+            period = f"{year}Q{quarter}"
+            
+            # Get ONI value for this quarter
+            oni_val = 0
+            oni_found = False
+            for enso_date, row in enso_df.iterrows():
+                enso_year = enso_date.year
+                enso_quarter = (enso_date.month - 1) // 3 + 1
+                
+                if enso_year == year and enso_quarter == quarter:
+                    oni_val = row['ONI'] if 'ONI' in row else 0
+                    oni_found = True
+                    break
+            
+            if not oni_found:
+                closest_date = min(enso_df.index, key=lambda x: abs((x - date).days))
+                if abs((closest_date - date).days) < 100:
+                    oni_val = enso_df.loc[closest_date, 'ONI'] if 'ONI' in enso_df.columns else 0
+            
+            # Determine ENSO condition
+            if oni_val > 0.5:
+                condition = "El Niño"
+            elif oni_val < -0.5:
+                condition = "La Niña"
+            else:
+                condition = "Neutral"
+            
+            # ===== EQUAL WEIGHTED STRATEGY =====
+            # Always 50% Hydro (equal weighted), 25% Gas (equal weighted), 25% Coal (equal weighted)
+            for stock in hydro_stocks:
+                weight_records.append({
+                    'symbol': stock,
+                    'period': period,
+                    'strategy': 'Equal_Weighted',
+                    'weight': 50.0 / len(hydro_stocks)
+                })
+            
+            for stock in gas_stocks:
+                weight_records.append({
+                    'symbol': stock,
+                    'period': period,
+                    'strategy': 'Equal_Weighted',
+                    'weight': 25.0 / len(gas_stocks)
+                })
+            
+            for stock in coal_stocks:
+                weight_records.append({
+                    'symbol': stock,
+                    'period': period,
+                    'strategy': 'Equal_Weighted',
+                    'weight': 25.0 / len(coal_stocks)
+                })
+            
+            # ===== ONI STRATEGY =====
+            if condition == "El Niño":
+                # 50% Gas + 50% Coal (equal weighted within sector)
+                for stock in gas_stocks:
+                    weight_records.append({
+                        'symbol': stock,
+                        'period': period,
+                        'strategy': 'ONI',
+                        'weight': 50.0 / len(gas_stocks)
+                    })
+                
+                for stock in coal_stocks:
+                    weight_records.append({
+                        'symbol': stock,
+                        'period': period,
+                        'strategy': 'ONI',
+                        'weight': 50.0 / len(coal_stocks)
+                    })
+            
+            elif condition == "La Niña":
+                # 100% Hydro (equal weighted)
+                for stock in hydro_stocks:
+                    weight_records.append({
+                        'symbol': stock,
+                        'period': period,
+                        'strategy': 'ONI',
+                        'weight': 100.0 / len(hydro_stocks)
+                    })
+            
+            else:  # Neutral
+                # 50% Hydro + 25% Gas + 25% Coal (equal weighted within sector)
+                for stock in hydro_stocks:
+                    weight_records.append({
+                        'symbol': stock,
+                        'period': period,
+                        'strategy': 'ONI',
+                        'weight': 50.0 / len(hydro_stocks)
+                    })
+                
+                for stock in gas_stocks:
+                    weight_records.append({
+                        'symbol': stock,
+                        'period': period,
+                        'strategy': 'ONI',
+                        'weight': 25.0 / len(gas_stocks)
+                    })
+                
+                for stock in coal_stocks:
+                    weight_records.append({
+                        'symbol': stock,
+                        'period': period,
+                        'strategy': 'ONI',
+                        'weight': 25.0 / len(coal_stocks)
+                    })
+            
+            # ===== ALPHA STRATEGY =====
+            # Before 1Q2019: Alpha = ONI
+            if date < pd.to_datetime('2019-01-01'):
+                # Copy ONI weights for Alpha
+                if condition == "El Niño":
+                    for stock in gas_stocks:
+                        weight_records.append({
+                            'symbol': stock,
+                            'period': period,
+                            'strategy': 'Alpha',
+                            'weight': 50.0 / len(gas_stocks)
+                        })
+                    
+                    for stock in coal_stocks:
+                        weight_records.append({
+                            'symbol': stock,
+                            'period': period,
+                            'strategy': 'Alpha',
+                            'weight': 50.0 / len(coal_stocks)
+                        })
+                
+                elif condition == "La Niña":
+                    for stock in hydro_stocks:
+                        weight_records.append({
+                            'symbol': stock,
+                            'period': period,
+                            'strategy': 'Alpha',
+                            'weight': 100.0 / len(hydro_stocks)
+                        })
+                
+                else:  # Neutral
+                    for stock in hydro_stocks:
+                        weight_records.append({
+                            'symbol': stock,
+                            'period': period,
+                            'strategy': 'Alpha',
+                            'weight': 50.0 / len(hydro_stocks)
+                        })
+                    
+                    for stock in gas_stocks:
+                        weight_records.append({
+                            'symbol': stock,
+                            'period': period,
+                            'strategy': 'Alpha',
+                            'weight': 25.0 / len(gas_stocks)
+                        })
+                    
+                    for stock in coal_stocks:
+                        weight_records.append({
+                            'symbol': stock,
+                            'period': period,
+                            'strategy': 'Alpha',
+                            'weight': 25.0 / len(coal_stocks)
+                        })
+            
+            # From 1Q2019 onwards: Use specialized portfolios
+            else:
+                if condition == "El Niño":
+                    # 50% Gas (specialized) + 50% Coal (specialized)
+                    # Get gas weights from gas_strategy_results.csv
+                    gas_period_data = gas_df[gas_df['quarter'] == period]
+                    if not gas_period_data.empty:
+                        gas_row = gas_period_data[gas_period_data['strategy_type'] == 'concentrated'].iloc[0]
+                        pow_weight = gas_row['pow_weight'] if 'pow_weight' in gas_row else 0.5
+                        nt2_weight = gas_row['nt2_weight'] if 'nt2_weight' in gas_row else 0.5
+                        
+                        # Only add stocks with non-zero weights
+                        # Note: weights in CSV are in decimal (1.0 = 100%), convert to percentage and multiply by sector allocation
+                        if pow_weight > 0:
+                            weight_records.append({
+                                'symbol': 'POW',
+                                'period': period,
+                                'strategy': 'Alpha',
+                                'weight': pow_weight * 100 * 0.5  # Convert to % and multiply by 50% gas allocation
+                            })
+                        
+                        if nt2_weight > 0:
+                            weight_records.append({
+                                'symbol': 'NT2',
+                                'period': period,
+                                'strategy': 'Alpha',
+                                'weight': nt2_weight * 100 * 0.5  # Convert to % and multiply by 50% gas allocation
+                            })
+                    else:
+                        # Fallback to equal weight
+                        for stock in gas_stocks:
+                            weight_records.append({
+                                'symbol': stock,
+                                'period': period,
+                                'strategy': 'Alpha',
+                                'weight': 50.0 / len(gas_stocks)
+                            })
+                    
+                    # Get coal weights from coal_strategy_results.csv
+                    coal_period_data = coal_df[coal_df['period'] == period]
+                    if not coal_period_data.empty:
+                        coal_row = coal_period_data[coal_period_data['strategy_type'] == 'concentrated'].iloc[0]
+                        selected_stocks_str = coal_row['selected_stocks'] if 'selected_stocks' in coal_row else ''
+                        
+                        # Parse selected stocks (format: "PPC, QTP" or "QTP")
+                        selected_coal = [s.strip() for s in str(selected_stocks_str).split(',') if s.strip() in coal_stocks]
+                        
+                        if selected_coal:
+                            coal_weight_per_stock = 50.0 / len(selected_coal)
+                            for stock in selected_coal:
+                                weight_records.append({
+                                    'symbol': stock,
+                                    'period': period,
+                                    'strategy': 'Alpha',
+                                    'weight': coal_weight_per_stock
+                                })
+                    else:
+                        # Fallback to equal weight
+                        for stock in coal_stocks:
+                            weight_records.append({
+                                'symbol': stock,
+                                'period': period,
+                                'strategy': 'Alpha',
+                                'weight': 50.0 / len(coal_stocks)
+                            })
+                
+                elif condition == "La Niña":
+                    # Before 2Q2020: use equal weighted (50% Hydro, 25% Gas, 25% Coal)
+                    # From 2Q2020: use 100% Hydro flood level portfolio
+                    if date < pd.to_datetime('2020-04-01'):
+                        # Equal weighted portfolio
+                        for stock in hydro_stocks:
+                            weight_records.append({
+                                'symbol': stock,
+                                'period': period,
+                                'strategy': 'Alpha',
+                                'weight': 50.0 / len(hydro_stocks)
+                            })
+                        
+                        for stock in gas_stocks:
+                            weight_records.append({
+                                'symbol': stock,
+                                'period': period,
+                                'strategy': 'Alpha',
+                                'weight': 25.0 / len(gas_stocks)
+                            })
+                        
+                        for stock in coal_stocks:
+                            weight_records.append({
+                                'symbol': stock,
+                                'period': period,
+                                'strategy': 'Alpha',
+                                'weight': 25.0 / len(coal_stocks)
+                            })
+                    else:
+                        # 100% Hydro flood level portfolio
+                        hydro_period_data = hydro_df[hydro_df['period'] == period]
+                        if not hydro_period_data.empty:
+                            hydro_row = hydro_period_data[hydro_period_data['strategy_type'] == 'flood_level'].iloc[0]
+                            liquid_stocks_str = hydro_row['liquid_stock'] if 'liquid_stock' in hydro_row else ''
+                            illiquid_stocks_str = hydro_row['illiquid_stock'] if 'illiquid_stock' in hydro_row else ''
+                            
+                            # Parse stocks - include ALL stocks, not just those in predefined list
+                            liquid_stocks = [s.strip() for s in str(liquid_stocks_str).split(',') if s.strip() and s.strip() != 'nan']
+                            illiquid_stocks = [s.strip() for s in str(illiquid_stocks_str).split(',') if s.strip() and s.strip() != 'nan']
+                            
+                            all_selected = liquid_stocks + illiquid_stocks
+                            
+                            if all_selected:
+                                hydro_weight_per_stock = 100.0 / len(all_selected)
+                                for stock in all_selected:
+                                    weight_records.append({
+                                        'symbol': stock,
+                                        'period': period,
+                                        'strategy': 'Alpha',
+                                        'weight': hydro_weight_per_stock
+                                    })
+                        else:
+                            # Fallback to equal weight
+                            for stock in hydro_stocks:
+                                weight_records.append({
+                                    'symbol': stock,
+                                    'period': period,
+                                    'strategy': 'Alpha',
+                                    'weight': 100.0 / len(hydro_stocks)
+                                })
+                
+                else:  # Neutral
+                    # 50% Hydro + 25% Gas + 25% Coal (specialized portfolios)
+                    
+                    # Hydro: Before 2Q2020 equal weighted, 2Q2020 equal weighted (baseline), from 3Q2020 flood level
+                    if date < pd.to_datetime('2020-04-01') or period == '2020Q2':
+                        # Before 2Q2020 or exactly 2Q2020 baseline: use equal weighted hydro
+                        for stock in hydro_stocks:
+                            weight_records.append({
+                                'symbol': stock,
+                                'period': period,
+                                'strategy': 'Alpha',
+                                'weight': 50.0 / len(hydro_stocks)
+                            })
+                    else:
+                        # From 3Q2020 onwards: use flood level portfolio
+                        hydro_period_data = hydro_df[hydro_df['period'] == period]
+                        if not hydro_period_data.empty:
+                            hydro_row = hydro_period_data[hydro_period_data['strategy_type'] == 'flood_level'].iloc[0]
+                            liquid_stocks_str = hydro_row['liquid_stock'] if 'liquid_stock' in hydro_row else ''
+                            illiquid_stocks_str = hydro_row['illiquid_stock'] if 'illiquid_stock' in hydro_row else ''
+                            
+                            # Parse stocks - include ALL stocks, not just those in predefined list
+                            liquid_stocks = [s.strip() for s in str(liquid_stocks_str).split(',') if s.strip() and s.strip() != 'nan']
+                            illiquid_stocks = [s.strip() for s in str(illiquid_stocks_str).split(',') if s.strip() and s.strip() != 'nan']
+                            
+                            all_selected = liquid_stocks + illiquid_stocks
+                            
+                            if all_selected:
+                                hydro_weight_per_stock = 50.0 / len(all_selected)
+                                for stock in all_selected:
+                                    weight_records.append({
+                                        'symbol': stock,
+                                        'period': period,
+                                        'strategy': 'Alpha',
+                                        'weight': hydro_weight_per_stock
+                                    })
+                        else:
+                            for stock in hydro_stocks:
+                                weight_records.append({
+                                    'symbol': stock,
+                                    'period': period,
+                                    'strategy': 'Alpha',
+                                    'weight': 50.0 / len(hydro_stocks)
+                                })
+                    
+                    # Gas: specialized portfolio
+                    gas_period_data = gas_df[gas_df['quarter'] == period]
+                    if not gas_period_data.empty:
+                        gas_row = gas_period_data[gas_period_data['strategy_type'] == 'concentrated'].iloc[0]
+                        pow_weight = gas_row['pow_weight'] if 'pow_weight' in gas_row else 0.5
+                        nt2_weight = gas_row['nt2_weight'] if 'nt2_weight' in gas_row else 0.5
+                        
+                        # Only add stocks with non-zero weights
+                        # Note: weights in CSV are in decimal (1.0 = 100%), convert to percentage and multiply by sector allocation
+                        if pow_weight > 0:
+                            weight_records.append({
+                                'symbol': 'POW',
+                                'period': period,
+                                'strategy': 'Alpha',
+                                'weight': pow_weight * 100 * 0.25  # Convert to % and multiply by 25% gas allocation
+                            })
+                        
+                        if nt2_weight > 0:
+                            weight_records.append({
+                                'symbol': 'NT2',
+                                'period': period,
+                                'strategy': 'Alpha',
+                                'weight': nt2_weight * 100 * 0.25  # Convert to % and multiply by 25% gas allocation
+                            })
+                    else:
+                        for stock in gas_stocks:
+                            weight_records.append({
+                                'symbol': stock,
+                                'period': period,
+                                'strategy': 'Alpha',
+                                'weight': 25.0 / len(gas_stocks)
+                            })
+                    
+                    # Coal: specialized portfolio
+                    coal_period_data = coal_df[coal_df['period'] == period]
+                    if not coal_period_data.empty:
+                        coal_row = coal_period_data[coal_period_data['strategy_type'] == 'concentrated'].iloc[0]
+                        selected_stocks_str = coal_row['selected_stocks'] if 'selected_stocks' in coal_row else ''
+                        
+                        selected_coal = [s.strip() for s in str(selected_stocks_str).split(',') if s.strip() in coal_stocks]
+                        
+                        if selected_coal:
+                            coal_weight_per_stock = 25.0 / len(selected_coal)
+                            for stock in selected_coal:
+                                weight_records.append({
+                                    'symbol': stock,
+                                    'period': period,
+                                    'strategy': 'Alpha',
+                                    'weight': coal_weight_per_stock
+                                })
+                    else:
+                        for stock in coal_stocks:
+                            weight_records.append({
+                                'symbol': stock,
+                                'period': period,
+                                'strategy': 'Alpha',
+                                'weight': 25.0 / len(coal_stocks)
+                            })
+        
+        # Create DataFrame from records
+        weights_df = pd.DataFrame(weight_records)
+        
+        # Sort by period, strategy, symbol
+        weights_df = weights_df.sort_values(['period', 'strategy', 'symbol'])
+        
+        # Round weights to 2 decimal places
+        weights_df['weight'] = weights_df['weight'].round(2)
+        
+        # Export to CSV
+        csv_file_path = os.path.join(script_dir, 'data', 'stock_weights.csv')
+        weights_df.to_csv(csv_file_path, index=False)
+        
+        print(f"✅ Successfully exported stock weights to: {csv_file_path}")
+        print(f"   Total records: {len(weights_df)}")
+        print(f"   Periods: {weights_df['period'].nunique()}")
+        print(f"   Strategies: {weights_df['strategy'].nunique()}")
+        print(f"   Symbols: {weights_df['symbol'].nunique()}")
+        
+        try:
+            st.success(f"✅ Stock weights exported to: {csv_file_path}")
+            st.info(f"Total records: {len(weights_df)} | Periods: {weights_df['period'].nunique()} | Strategies: {weights_df['strategy'].nunique()}")
+        except:
+            pass
+        
+        return True
+        
+    except Exception as e:
+        error_msg = f"Error exporting stock weights to CSV: {e}"
+        print(error_msg)
+        import traceback
+        print(traceback.format_exc())
+        try:
+            st.error(error_msg)
+        except:
+            pass
+        return False
+
+
 def generate_and_export_strategies_csv():
     """Simple function to generate strategy data and export to CSV - can be called from anywhere"""
     try:
@@ -1128,6 +1595,14 @@ def generate_and_export_strategies_csv():
         if unified_df is not None and not unified_df.empty:
             print(f"✅ Generated {len(unified_df)} quarters of strategy data")
             # CSV export happens automatically in create_comprehensive_strategy_comparison
+            
+            # Also export stock weights
+            print("\n🔄 Exporting stock weights...")
+            if export_stock_weights_to_csv(enso_df):
+                print("✅ Stock weights exported successfully")
+            else:
+                print("⚠️ Failed to export stock weights")
+            
             return True
         else:
             print("❌ Failed to generate strategy data")
@@ -1206,7 +1681,7 @@ def create_unified_strategy_chart(unified_df):
         except Exception as e:
             st.warning(f"Error processing Period data: {e}")
             # Create a default date range
-            period_data = pd.date_range('2011-01-01', '2025-06-30', periods=len(chart_df))
+            period_data = pd.date_range('2011-01-01', '2025-09-30', periods=len(chart_df))
         
         # Clean all cumulative return columns
         alpha_cum = clean_and_convert_column('Alpha_Cumulative')
@@ -1514,7 +1989,7 @@ def create_weight_allocation_tables():
             'ONI-based with Mixed Portfolios (Transition)',
             'ONI-based with Specialized Portfolios'
         ],
-        'El Niño (ONI > 0.3)': [
+        'El Niño (ONI > 0.5)': [
             'Same as ONI: 50% Gas + 50% Coal (Equal Weight)',
             '50% Gas (Specialized Volume) + 50% Coal (Specialized Volume)',
             '50% Gas (Best Contracted Volume) + 50% Coal (Best Sales Volume)'
@@ -1524,7 +1999,7 @@ def create_weight_allocation_tables():
             '50% Sector Weight + 25% Gas (Specialized) + 25% Coal (Specialized)',
             '50% Hydro (Flood Portfolio) + 25% Gas (Best Contracted) + 25% Coal (Best Sales)'
         ],
-        'La Niña (ONI < -0.3)': [
+        'La Niña (ONI < -0.5)': [
             'Same as ONI: 100% Hydro (Sector Weight)',
             '100% Sector Weight Portfolio (50% Hydro, 25% Gas, 25% Coal)',
             '100% Hydro (Flood Level Portfolio)'
@@ -1535,7 +2010,7 @@ def create_weight_allocation_tables():
     
     # ONI Strategy Sector Weights (Based on ENSO conditions only)
     oni_weights = pd.DataFrame({
-        'ENSO Condition': ['El Niño (ONI > 0.3)', 'Neutral (-0.5 ≤ ONI ≤ 0.5)', 'La Niña (ONI < -0.3)'],
+        'ENSO Condition': ['El Niño (ONI > 0.5)', 'Neutral (-0.5 ≤ ONI ≤ 0.5)', 'La Niña (ONI < -0.5)'],
         'Hydro Allocation (%)': [0, 50, 100],
         'Gas Allocation (%)': [50, 25, 0],
         'Coal Allocation (%)': [50, 25, 0],
@@ -1590,9 +2065,9 @@ def create_alpha_sector_weight_tables():
                 oni_value = row.get('ONI', 0)
                 
                 # Determine ENSO condition
-                if oni_value > 0.3:
+                if oni_value > 0.5:
                     condition = "El Niño"
-                elif oni_value < -0.3:
+                elif oni_value < -0.5:
                     condition = "La Niña"
                 else:
                     condition = "Neutral"
@@ -1621,15 +2096,15 @@ def create_alpha_sector_weight_tables():
                     if condition == "El Niño":
                         hydro_allocation = "Not Selected"
                         gas_allocation = "POW: 50%, NT2: 50%"
-                        coal_allocation = "Not Selected"
+                        coal_allocation = "QTP: 33.33%, PPC: 33.33%, HND: 33.33%"
                     elif condition == "La Niña":
-                        hydro_allocation = "REE: 25%, PC1: 25%, HDG: 25%, GEG: 25%"
+                        hydro_allocation = "Equal Weight - All 16 hydro stocks (100% total)"
                         gas_allocation = "Not Selected"
                         coal_allocation = "Not Selected"
                     else:  # Neutral
-                        hydro_allocation = "REE: 12.5%, PC1: 12.5%, HDG: 12.5%, GEG: 12.5%"
-                        gas_allocation = "POW: 12.5%, NT2: 12.5%"
-                        coal_allocation = "QTP: 8.33%, PPC: 8.33%, HND: 8.33%"
+                        hydro_allocation = "Equal Weight - All 16 hydro stocks (50% total)"
+                        gas_allocation = "POW: 12.5%, NT2: 12.5% (25% total)"
+                        coal_allocation = "QTP: 8.33%, PPC: 8.33%, HND: 8.33% (25% total)"
                 
                 elif period == "1Q2019-1Q2020":
                     if condition == "El Niño":
@@ -1637,16 +2112,21 @@ def create_alpha_sector_weight_tables():
                         gas_allocation = "Specialized Portfolio (50% total)"
                         coal_allocation = "Specialized Portfolio (50% total)"
                     elif condition == "La Niña":
-                        hydro_allocation = "REE: 11.11%, PC1: 11.11%, HDG: 11.11%, GEG: 11.11%"
-                        gas_allocation = "POW: 11.11%, NT2: 11.11%"
-                        coal_allocation = "QTP: 11.11%, PPC: 11.11%, HND: 11.11%"
+                        hydro_allocation = "Equal Weight - All 16 hydro stocks (100% total)"
+                        gas_allocation = "Not Selected"
+                        coal_allocation = "Not Selected"
                     else:  # Neutral
-                        hydro_allocation = "Equal Weight (REE: 11.11%, PC1: 11.11%, HDG: 11.11%, GEG: 11.11%)"
-                        gas_allocation = "Equal + Specialized (25% total)"
-                        coal_allocation = "Equal + Specialized (25% total)"
+                        hydro_allocation = "Equal Weight - All 16 hydro stocks (50% total)"
+                        gas_allocation = "Specialized Portfolio (25% total)"
+                        coal_allocation = "Specialized Portfolio (25% total)"
                 
                 else:  # 2Q2020+
-                    if condition == "El Niño":
+                    # Special handling for 2Q2020 baseline
+                    if quarter == "2Q2020" and condition == "Neutral":
+                        hydro_allocation = "Equal Weight - All 16 hydro stocks (50% total)"
+                        gas_allocation = "Best Contracted Volume Portfolio (25% total)"
+                        coal_allocation = "Best Sales Volume Portfolio (25% total)"
+                    elif condition == "El Niño":
                         hydro_allocation = "Not Selected"
                         gas_allocation = "Best Contracted Volume Portfolio (50% total)"
                         coal_allocation = "Best Sales Volume Portfolio (50% total)"
@@ -1654,7 +2134,7 @@ def create_alpha_sector_weight_tables():
                         hydro_allocation = "Flood Level Portfolio (100% total)"
                         gas_allocation = "Not Selected"
                         coal_allocation = "Not Selected"
-                    else:  # Neutral
+                    else:  # Neutral (from 3Q2020+)
                         hydro_allocation = "Flood Level Portfolio (50% total)"
                         gas_allocation = "Best Contracted Volume Portfolio (25% total)"
                         coal_allocation = "Best Sales Volume Portfolio (25% total)"
@@ -1722,9 +2202,9 @@ def create_quarterly_weight_tables():
                 oni_value = row.get('ONI', 0)
                 
                 # Determine ENSO condition
-                if oni_value > 0.3:
+                if oni_value > 0.5:
                     condition = "El Niño"
-                elif oni_value < -0.3:
+                elif oni_value < -0.5:
                     condition = "La Niña"
                 else:
                     condition = "Neutral"
@@ -1768,12 +2248,12 @@ def create_quarterly_weight_tables():
                             elif sectors[i] == "Coal":
                                 alpha_weights[stock] = 16.67  # QTP: 16.67%, PPC: 16.67%, HND: 16.67%
                     elif condition == "La Niña":
-                        # Only Hydro stocks (REE, PC1, HDG, GEG get 25% each)
+                        # 100% Hydro - equally weighted among 16 stocks
                         alpha_weights = {stock: 0 for stock in stocks}
                         hydro_stocks = ['REE', 'PC1', 'HDG', 'GEG', 'TTA', 'AVC', 'GHC', 'VPD', 'DRL', 'S4A', 'SBA', 'VSH', 'NED', 'TMP', 'HNA', 'SHP']
                         for stock in hydro_stocks:
                             if stock in alpha_weights:
-                                alpha_weights[stock] = 25
+                                alpha_weights[stock] = 6.25  # 100% / 16 stocks = 6.25% each
                     else:  # Neutral
                         # Equal weight: Hydro (50% total), Gas (25% total), Coal (25% total)
                         alpha_weights = {stock: 0 for stock in stocks}
@@ -1783,7 +2263,7 @@ def create_quarterly_weight_tables():
                         
                         for stock in hydro_stocks:
                             if stock in alpha_weights:
-                                alpha_weights[stock] = 12.5  # 50% / 4 stocks = 12.5% each
+                                alpha_weights[stock] = 3.125  # 50% / 16 stocks = 3.125% each
                         for stock in gas_stocks:
                             if stock in alpha_weights:
                                 alpha_weights[stock] = 12.5  # 25% / 2 stocks = 12.5% each  
@@ -1810,23 +2290,46 @@ def create_quarterly_weight_tables():
                         weight_per_stock = 100 / num_stocks if num_stocks > 0 else 0
                         alpha_weights = {stock: f"{weight_per_stock:.2f}%" if stock in ['REE', 'PC1', 'HDG', 'GEG', 'TTA', 'AVC', 'GHC', 'VPD', 'DRL', 'S4A', 'SBA', 'VSH', 'NED', 'TMP', 'HNA', 'SHP', 'POW', 'NT2', 'QTP', 'PPC', 'HND'] else 0 for stock in stocks}
                     else:  # Neutral
-                        # Equal weight base (50%) + Gas specialized (25%) + Coal specialized (25%)  
+                        # 50% Hydro (equal weighted) + 25% Gas (specialized) + 25% Coal (specialized)
                         alpha_weights = {stock: 0 for stock in stocks}
-                        base_stocks = ['REE', 'PC1', 'HDG', 'GEG', 'TTA', 'AVC', 'GHC', 'VPD', 'DRL', 'S4A', 'SBA', 'VSH', 'NED', 'TMP', 'HNA', 'SHP', 'POW', 'NT2', 'QTP', 'PPC', 'HND']
+                        hydro_stocks = ['REE', 'PC1', 'HDG', 'GEG', 'TTA', 'AVC', 'GHC', 'VPD', 'DRL', 'S4A', 'SBA', 'VSH', 'NED', 'TMP', 'HNA', 'SHP']
                         gas_stocks = ['POW', 'NT2']  
                         coal_stocks = ['QTP', 'PPC', 'HND']
                         
-                        for stock in base_stocks:
+                        # Hydro: 50% equally weighted among 16 stocks = 3.125% each
+                        for stock in hydro_stocks:
                             if stock in alpha_weights:
-                                if stock in gas_stocks:
-                                    alpha_weights[stock] = 'Equal Weight + Gas Portfolio'
-                                elif stock in coal_stocks:
-                                    alpha_weights[stock] = 'Equal Weight + Coal Portfolio'  
-                                else:
-                                    alpha_weights[stock] = 'Equal Weight Only'
+                                alpha_weights[stock] = 3.125
+                        
+                        # Gas: 25% from specialized portfolio
+                        for stock in gas_stocks:
+                            if stock in alpha_weights:
+                                alpha_weights[stock] = 'Gas Portfolio (25% total)'
+                        
+                        # Coal: 25% from specialized portfolio
+                        for stock in coal_stocks:
+                            if stock in alpha_weights:
+                                alpha_weights[stock] = 'Coal Portfolio (25% total)'
                 
                 else:  # 2Q2020+
-                    if condition == "El Niño":
+                    # Special handling for 2Q2020 baseline period
+                    if quarter == "2Q2020" and condition == "Neutral":
+                        # 2Q2020 baseline: use equal weighted hydro (50%) + specialized gas/coal (25% each)
+                        alpha_weights = {stock: 0 for stock in stocks}
+                        hydro_stocks = ['REE', 'PC1', 'HDG', 'GEG', 'TTA', 'AVC', 'GHC', 'VPD', 'DRL', 'S4A', 'SBA', 'VSH', 'NED', 'TMP', 'HNA', 'SHP']
+                        gas_stocks = ['POW', 'NT2']
+                        coal_stocks = ['QTP', 'PPC', 'HND']
+                        
+                        for stock in hydro_stocks:
+                            if stock in alpha_weights:
+                                alpha_weights[stock] = 3.125  # 50% / 16 stocks = 3.125% each
+                        for stock in gas_stocks:
+                            if stock in alpha_weights:
+                                alpha_weights[stock] = 'Best Contracted Volume Portfolio (25% total)'
+                        for stock in coal_stocks:
+                            if stock in alpha_weights:
+                                alpha_weights[stock] = 'Best Sales Volume Portfolio (25% total)'
+                    elif condition == "El Niño":
                         # Gas + Coal specialized portfolios (50% each sector)
                         alpha_weights = {stock: 0 for stock in stocks}
                         gas_stocks = ['POW', 'NT2']
@@ -1834,10 +2337,10 @@ def create_quarterly_weight_tables():
                         
                         for stock in gas_stocks:
                             if stock in alpha_weights:
-                                alpha_weights[stock] = 'Best Contracted Volume Portfolio'
+                                alpha_weights[stock] = 'Best Contracted Volume Portfolio (50% total)'
                         for stock in coal_stocks:
                             if stock in alpha_weights:
-                                alpha_weights[stock] = 'Best Sales Volume Portfolio'
+                                alpha_weights[stock] = 'Best Sales Volume Portfolio (50% total)'
                     elif condition == "La Niña":
                         # Hydro flood portfolio (100% hydro sector)
                         alpha_weights = {stock: 0 for stock in stocks}
@@ -1845,8 +2348,8 @@ def create_quarterly_weight_tables():
                         
                         for stock in hydro_stocks:
                             if stock in alpha_weights:
-                                alpha_weights[stock] = 'Flood Level Portfolio'
-                    else:  # Neutral
+                                alpha_weights[stock] = 'Flood Level Portfolio (100% total)'
+                    else:  # Neutral (from 3Q2020+)
                         # 50% Hydro Flood + 25% Gas specialized + 25% Coal specialized
                         alpha_weights = {stock: 0 for stock in stocks}
                         hydro_stocks = ['REE', 'PC1', 'HDG', 'GEG', 'TTA', 'AVC', 'GHC', 'VPD', 'DRL', 'S4A', 'SBA', 'VSH', 'NED', 'TMP', 'HNA', 'SHP']
@@ -1855,10 +2358,10 @@ def create_quarterly_weight_tables():
                         
                         for stock in hydro_stocks:
                             if stock in alpha_weights:
-                                alpha_weights[stock] = 'Flood Level Portfolio (50%)'
+                                alpha_weights[stock] = 'Flood Level Portfolio (50% total)'
                         for stock in gas_stocks:
                             if stock in alpha_weights:
-                                alpha_weights[stock] = 'Best Contracted Volume Portfolio (25%)'
+                                alpha_weights[stock] = 'Best Contracted Volume Portfolio (25% total)'
                         for stock in coal_stocks:
                             if stock in alpha_weights:
                                 alpha_weights[stock] = 'Best Sales Volume Portfolio (25%)'
@@ -2047,7 +2550,7 @@ def display_simple_cumulative_returns():
         st.subheader("📋 Detailed Returns Analysis")
         
         # Create tabs for different analysis views
-        table_tab1, table_tab2, table_tab3 = st.tabs(["📊 Quarterly & Cumulative Returns", "⚖️ Portfolio Weights", "📈 Performance Analysis"])
+        table_tab1, table_tab2 = st.tabs(["📊 Portfolio Returns", "⚖️ Portfolio Weights"])
         
         with table_tab1:
             # Detailed returns table
@@ -2115,89 +2618,70 @@ def display_simple_cumulative_returns():
             st.markdown("#### Portfolio Weight Allocations")
             
             # Create tabs for different weight views
-            weight_tab1, weight_tab2, weight_tab3 = st.tabs(["📋 Summary Tables", "📊 Alpha Quarterly Weights", "🌊 ONI Quarterly Weights"])
+            weight_tab1, weight_tab2 = st.tabs(["🎯 Alpha Detailed Weights", "🌊 ONI Detailed Weights"])
             
             with weight_tab1:
-                # Get weight allocation tables
-                alpha_timeline, _, oni_weights = create_weight_allocation_tables()
-                
-                # Alpha Strategy Timeline Evolution
-                st.markdown("**🎯 Alpha Strategy - Timeline Evolution**")
+                st.markdown("**🎯 Alpha Strategy - Stocks by Quarter**")
                 st.markdown("""
-                The Alpha Strategy evolves through three distinct periods based on timeline and ENSO conditions:
-                """)
-                st.dataframe(alpha_timeline, use_container_width=True, hide_index=True)
+                This table shows the actual stocks selected and their exact weights for each quarter in the Alpha strategy.
                 
-                # Get sector-based Alpha strategy weights
-                alpha_sector_df = create_alpha_sector_weight_tables()
-                
-                st.markdown("**🎯 Alpha Strategy - Sector-Based Portfolio Weights**")
-                st.markdown("""
-                This table shows the selected stocks and their weights by sector for each quarter:
-                
-                **Portfolio Types Explained:**
-                - **🌊 Flood Portfolio**: Hydro stocks selected based on reservoir levels and flood risk
-                - **⚡ Best Contracted Volume**: Gas stocks with highest contracted volume growth
-                - **🔥 Best Sales Volume**: Coal stocks with highest sales volume growth
-                - **⚖️ Equal Weight**: Sector-weighted (50% Hydro, 25% Gas, 25% Coal)
-                - **Not Selected**: Sector not included in portfolio for that quarter
+                **Data Source**: Loaded from `stock_weights.csv` - only shows stocks with non-zero allocations.
                 """)
                 
-                if not alpha_sector_df.empty:
-                    # Display only the relevant columns for cleaner view
-                    display_cols = ['Quarter', 'ENSO_Condition', 'Hydro_Portfolio', 'Gas_Portfolio', 'Coal_Portfolio']
-                    sector_display_df = alpha_sector_df[display_cols].copy()
-                    sector_display_df.columns = ['Quarter', 'ENSO Condition', '🌊 Hydro Sector', '⚡ Gas Sector', '🔥 Coal Sector']
+                # Load stock weights from CSV
+                try:
+                    script_dir = os.path.dirname(os.path.abspath(__file__))
+                    weights_file = os.path.join(script_dir, 'data', 'stock_weights.csv')
                     
-                    st.dataframe(sector_display_df, use_container_width=True, hide_index=True, height=400)
-                else:
-                    st.error("❌ Could not load Alpha sector weight data")
-                
-                st.markdown("---")
-                
-                # ONI Strategy Weights  
-                st.markdown("**🌊 ONI Strategy - Pure ENSO-Based Allocation**")
-                st.markdown("""
-                The ONI Strategy uses pure ENSO conditions for sector allocation with equal-weighted portfolios:
-                """)
-                st.dataframe(oni_weights, use_container_width=True, hide_index=True)
+                    if os.path.exists(weights_file):
+                        weights_df = pd.read_csv(weights_file)
+                        
+                        # Filter for Alpha strategy only and non-zero weights
+                        alpha_weights = weights_df[
+                            (weights_df['strategy'] == 'Alpha') & 
+                            (weights_df['weight'] > 0)
+                        ].copy()
+                        
+                        if not alpha_weights.empty:
+                            # Rename columns for better display
+                            alpha_weights = alpha_weights.rename(columns={
+                                'symbol': 'Stock Symbol',
+                                'period': 'Quarter',
+                                'weight': 'Weight (%)'
+                            })
+                            
+                            # Select only the columns we need
+                            display_df = alpha_weights[['Quarter', 'Stock Symbol', 'Weight (%)']].copy()
+                            
+                            # Sort by Quarter and Weight
+                            display_df = display_df.sort_values(['Quarter', 'Weight (%)'], ascending=[True, False])
+                            
+                            # Show stock list by quarter
+                            # Group by quarter and show stocks with weights
+                            quarter_groups = display_df.groupby('Quarter').apply(
+                                lambda x: ', '.join([f"{row['Stock Symbol']} ({row['Weight (%)']:.1f}%)" 
+                                                    for _, row in x.iterrows()])
+                            ).reset_index()
+                            quarter_groups.columns = ['Quarter', 'Stocks & Weights']
+                            
+                            st.dataframe(
+                                quarter_groups,
+                                use_container_width=True,
+                                hide_index=True,
+                                height=600
+                            )
+                            
+                        else:
+                            st.warning("⚠️ No Alpha strategy weights found in stock_weights.csv")
+                    else:
+                        st.error(f"❌ Stock weights file not found: {weights_file}")
+                        st.info("💡 Please run `python trading_strategies.py` to generate stock_weights.csv")
+                        
+                except Exception as e:
+                    st.error(f"❌ Error loading Alpha stock weights: {e}")
+                    st.error(traceback.format_exc())
             
             with weight_tab2:
-                st.markdown("**🎯 Alpha Strategy - Exact Quarterly Stock Weights**")
-                st.markdown("""
-                This table shows the exact weight allocation methodology for each stock in each quarter.
-                
-                **Important Note**: Specialized portfolios (Gas/Coal/Flood) use dynamic algorithms from separate strategy files:
-                - Returns come from `gas_strategy.py`, `coal_strategy.py`, and `hydro_strategy.py`
-                - Individual stock weights within specialized portfolios are calculated dynamically
-                - The display shows the portfolio type, not fixed percentage allocations
-                """)
-                
-                # Get quarterly weight tables
-                alpha_quarterly_df, _ = create_quarterly_weight_tables()
-                
-                if not alpha_quarterly_df.empty:
-                    
-                    # Display the full quarterly table
-                    st.dataframe(
-                        alpha_quarterly_df, 
-                        use_container_width=True, 
-                        hide_index=True,
-                        height=400
-                    )
-                    
-                    # Add download button for Alpha weights
-                    alpha_csv = alpha_quarterly_df.to_csv(index=False)
-                    st.download_button(
-                        label="📄 Download Alpha Quarterly Weights as CSV",
-                        data=alpha_csv,
-                        file_name="alpha_strategy_quarterly_weights.csv",
-                        mime="text/csv"
-                    )
-                else:
-                    st.error("❌ Could not load quarterly Alpha strategy weights")
-            
-            with weight_tab3:
                 st.markdown("**🌊 ONI Strategy - Exact Quarterly Sector Weights**")
                 st.markdown("""
                 This table shows the exact sector allocation for each quarter based on ENSO conditions.
@@ -2219,158 +2703,6 @@ def display_simple_cumulative_returns():
                         height=400
                     )
                     
-                    # Add sector breakdown explanation
-                    st.markdown("**Sector Stock Composition:**")
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        st.markdown("""
-                        **🌊 Hydro Sector (Equal Weight):**
-                        - REE: 25%
-                        - PC1: 25%  
-                        - HDG: 25%
-                        - GEG: 25%
-                        """)
-                    
-                    with col2:
-                        st.markdown("""
-                        **⚡ Gas Sector (Equal Weight):**
-                        - POW: 50%
-                        - NT2: 50%
-                        """)
-                    
-                    with col3:
-                        st.markdown("""
-                        **🔥 Coal Sector (Equal Weight):**
-                        - QTP: 33.33%
-                        - PPC: 33.33%
-                        - HND: 33.33%
-                        """)
-                    
-                    # Add download button for ONI weights
-                    oni_csv = oni_quarterly_df.to_csv(index=False)
-                    st.download_button(
-                        label="📄 Download ONI Quarterly Weights as CSV",
-                        data=oni_csv,
-                        file_name="oni_strategy_quarterly_weights.csv",
-                        mime="text/csv"
-                    )
-                else:
-                    st.error("❌ Could not load quarterly ONI strategy weights")
-            
-            st.markdown("---")
-            
-            # Key Differences Explanation
-            st.markdown("**🔍 Key Strategy Differences:**")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("""
-                **🎯 Alpha Strategy:**
-                - **Timeline Evolution**:
-                  - Before 1Q2019: Alpha = ONI (identical)
-                  - 1Q2019-1Q2020: Transition period (La Niña uses equal weight)
-                  - 2Q2020+: Full specialized portfolios
-                - **Specialized Portfolios**:
-                  - **Hydro**: Flood portfolio (reservoir level-based) from 2Q2020
-                  - **Gas**: Best contracted volume growth (dynamic POW vs NT2)
-                  - **Coal**: Best sales volume growth (dynamic PPC, QTP, HND)
-                - **Mixed Methodology**: Combines equal weight and specialized strategies during transition
-                """)
-            
-            with col2:
-                st.markdown("""
-                **🌊 ONI Strategy:**
-                - Uses **equal-weighted sector portfolios** only
-                - **Pure ENSO-based** allocation throughout
-                - No timeline changes or methodology evolution  
-                - Simple sector allocation rules:
-                  - El Niño: 50% Gas + 50% Coal (equal within sectors)
-                  - Neutral: 50% Hydro + 25% Gas + 25% Coal (equal within sectors)
-                  - La Niña: 100% Hydro (equal within sector)
-                - Consistent methodology across all periods
-                """)
-            
-            # Current ENSO Status (if data available)
-            try:
-                script_dir = os.path.dirname(os.path.abspath(__file__))
-                enso_file = os.path.join(script_dir, 'data', 'enso_data_quarterly.csv')
-                if os.path.exists(enso_file):
-                    enso_df = pd.read_csv(enso_file)
-                    if not enso_df.empty and 'ONI' in enso_df.columns:
-                        latest_oni = enso_df['ONI'].iloc[-1] if len(enso_df) > 0 else 0
-                        if latest_oni > 0.3:
-                            current_condition = "El Niño"
-                            condition_color = "🔴"
-                            current_allocation = "Alpha: 50% Gas (Best Contracted) + 50% Coal (Best Sales) | ONI: 50% Gas + 50% Coal (Equal)"
-                        elif latest_oni < -0.3:
-                            current_condition = "La Niña"
-                            condition_color = "🔵"
-                            current_allocation = "Alpha: 100% Hydro (Flood Portfolio) | ONI: 100% Hydro (Equal Weight)"
-                        else:
-                            current_condition = "Neutral"
-                            condition_color = "⚪"
-                            current_allocation = "Alpha: 50% Hydro (Flood) + 25% Gas (Best Contracted) + 25% Coal (Best Sales) | ONI: 50% Hydro + 25% Gas + 25% Coal (All Equal)"
-                        
-                        st.info(f"{condition_color} **Current ENSO Condition**: {current_condition} (ONI: {latest_oni:.2f})")
-                        st.info(f"**Current Allocations**: {current_allocation}")
-            except:
-                pass
-        
-        with table_tab3:
-            # Performance analysis
-            st.markdown("#### Strategy Performance Analysis")
-            
-            # Risk-Return Analysis
-            st.markdown("**Risk-Return Metrics**")
-            
-            # Calculate Sharpe-like ratios (using standard deviation as risk measure)
-            risk_return_data = []
-            strategies = ['Alpha_Return', 'ONI_Return', 'Equal_Return', 'VNI_Return']
-            strategy_names = ['Alpha Strategy', 'ONI Strategy', 'Equal Weight', 'VNI Benchmark']
-            
-            for strategy, name in zip(strategies, strategy_names):
-                avg_return = filtered_csv_df[strategy].mean()
-                volatility = filtered_csv_df[strategy].std()
-                risk_return_ratio = avg_return / volatility if volatility > 0 else 0
-                
-                risk_return_data.append({
-                    'Strategy': name,
-                    'Average Return (%)': f"{avg_return:.2f}%",
-                    'Volatility (%)': f"{volatility:.2f}%",
-                    'Return/Risk Ratio': f"{risk_return_ratio:.2f}"
-                })
-            
-            risk_return_df = pd.DataFrame(risk_return_data)
-            st.dataframe(risk_return_df, use_container_width=True, hide_index=True)
-            
-            # Rolling Performance Analysis
-            st.markdown("**Rolling 4-Quarter Performance**")
-            if len(filtered_csv_df) >= 4:
-                rolling_data = []
-                for i in range(3, len(filtered_csv_df)):
-                    period_end = filtered_csv_df.iloc[i]['Quarter_Label']
-                    
-                    # Calculate 4-quarter rolling returns
-                    alpha_rolling = filtered_csv_df.iloc[i-3:i+1]['Alpha_Return'].sum()
-                    oni_rolling = filtered_csv_df.iloc[i-3:i+1]['ONI_Return'].sum()
-                    equal_rolling = filtered_csv_df.iloc[i-3:i+1]['Equal_Return'].sum()
-                    vni_rolling = filtered_csv_df.iloc[i-3:i+1]['VNI_Return'].sum()
-                    
-                    rolling_data.append({
-                        'Period End': period_end,
-                        'Alpha 4Q Return (%)': f"{alpha_rolling:.2f}%",
-                        'ONI 4Q Return (%)': f"{oni_rolling:.2f}%",
-                        'Equal 4Q Return (%)': f"{equal_rolling:.2f}%",
-                        'VNI 4Q Return (%)': f"{vni_rolling:.2f}%"
-                    })
-                
-                rolling_df = pd.DataFrame(rolling_data)
-                st.dataframe(rolling_df, use_container_width=True, hide_index=True)
-            else:
-                st.info("Need at least 4 quarters of data for rolling analysis")
-        
         # Download Options
         st.subheader("💾 Export Data")
         col1, col2 = st.columns(2)
@@ -2654,8 +2986,23 @@ if __name__ == "__main__":
                     print(f"   VNI Benchmark: {existing_df['VNI_Cumulative'].iloc[-1]:.2f}%")
                 
                 print(f"✅ CSV file is available at: {csv_file}")
-                print("✅ Trading strategies analysis completed successfully!")
-                print("💡 To regenerate with fresh data, run within Streamlit app or delete existing CSV")
+                
+                # Also check and generate stock_weights.csv if needed
+                stock_weights_file = os.path.join(script_dir, 'data', 'stock_weights.csv')
+                if not os.path.exists(stock_weights_file):
+                    print("\n📊 Stock weights CSV not found, generating...")
+                    enso_file = os.path.join(script_dir, 'data', 'enso_data_quarterly.csv')
+                    if os.path.exists(enso_file):
+                        enso_df = load_enso_data()  # Use load_enso_data() to get properly formatted data
+                        if export_stock_weights_to_csv(enso_df):
+                            print("✅ Stock weights CSV generated successfully!")
+                    else:
+                        print("⚠️ Cannot generate stock weights without ENSO data")
+                else:
+                    print(f"✅ Stock weights CSV is available at: {stock_weights_file}")
+                
+                print("\n✅ Trading strategies analysis completed successfully!")
+                print("💡 To regenerate with fresh data, run within Streamlit app or delete existing CSVs")
                 
             except Exception as read_error:
                 print(f"⚠️ Could not read existing CSV: {read_error}")
@@ -2701,7 +3048,9 @@ if __name__ == "__main__":
                 print(f"   VNI Benchmark: {unified_df['VNI_Cumulative'].iloc[-1]:.2f}%")
                 
                 print("\n✅ Trading strategies analysis completed successfully!")
-                print("✅ CSV file automatically exported to data/trading_strategies_comparison.csv")
+                print("✅ CSV files automatically exported to data/ folder:")
+                print("   - trading_strategies_comparison.csv")
+                print("   - stock_weights.csv")
                 
             else:
                 print("❌ Failed to generate strategy comparison data")

@@ -66,6 +66,18 @@ except ImportError:
     COMPANY_MODULE_AVAILABLE = False
     print("Warning: company module not available.")
 
+# Import Strategy Results Loader (for CSV-based display)
+try:
+    from strategy_results_loader import (
+        display_hydro_strategy_from_csv,
+        display_gas_strategy_from_csv,
+        display_coal_strategy_from_csv
+    )
+    STRATEGY_RESULTS_LOADER_AVAILABLE = True
+except ImportError:
+    STRATEGY_RESULTS_LOADER_AVAILABLE = False
+    print("Warning: strategy_results_loader module not available.")
+
 # Suppress warnings
 warnings.filterwarnings('ignore', category=FutureWarning)
 
@@ -1324,14 +1336,14 @@ if selected_page == "⚡Total Volume":
         
         st.plotly_chart(fig_alpha, use_container_width=True)
 
-    # Maximum Power Section
+    # Maximum Capacity Section
     if has_renewable_data and renewable_df is not None:
-        st.subheader("Maximum Power")
+        st.subheader("Maximum Capacity")
         
-        # Check if the maximum power commercialized column exists
+        # Check if the Maximum Capacity commercialized column exists
         power_column = 'max_power_thuong_pham_MW'
         if power_column in renewable_df.columns:
-            # Controls for Maximum Power chart
+            # Controls for Maximum Capacity chart
             max_power_col1, max_power_col2 = st.columns(2)
             
             with max_power_col1:
@@ -1391,7 +1403,7 @@ if selected_page == "⚡Total Volume":
                 
                 max_power_fig.add_trace(
                     go.Bar(
-                        name='Maximum Power',
+                        name='Maximum Capacity',
                         x=x_labels,
                         y=max_power_grouped[power_column],
                         marker_color='#2ca02c',
@@ -1400,9 +1412,9 @@ if selected_page == "⚡Total Volume":
                 )
                 
                 max_power_fig.update_layout(
-                    title=f'{max_power_period} Maximum Power Commercialized',
+                    title=f'{max_power_period} Maximum Capacity Commercialized',
                     xaxis_title="Period",
-                    yaxis_title="Maximum Power (MW)",
+                    yaxis_title="Maximum Capacity (MW)",
                     hovermode='x unified',
                     showlegend=True,
                     height=400
@@ -1503,7 +1515,7 @@ if selected_page == "⚡Total Volume":
 
     # P Max Data Download Section
     if has_renewable_data and renewable_df is not None:
-        st.write("**Maximum Power (Pmax) Data**")
+        st.write("**Maximum Capacity (Pmax) Data**")
         col1, col2 = st.columns(2)
         with col1:
             if st.download_button(
@@ -1529,7 +1541,7 @@ if selected_page == "⚡Total Volume":
 
 # Average Price Page
 elif selected_page == "💲Average Price":
-    st.subheader("Weighted Average (CGM) Price Analysis")
+    st.subheader("CGM Price Analysis")
     
     if has_cgm_data and cgm_df is not None:
         # Controls
@@ -1675,9 +1687,9 @@ elif selected_page == "💲Average Price":
     # Download data section - moved to end
     st.subheader("📥 Download Data")
     
-    # Weighted Average (CGM) Price Data Download
+    # CGM Price Data Download
     if has_cgm_data and cgm_df is not None:
-        st.write("**Weighted Average (CGM) Price Data**")
+        st.write("**CGM Price Data**")
         col1, col2 = st.columns(2)
         with col1:
             if st.download_button(
@@ -3263,14 +3275,19 @@ elif selected_page == "🌤️Weather":
                 
                 with enso_col2:
                     # Filter by year range if available
-                    if 'Quarter_Year' in enso_df.columns or ('Unnamed: 0' in enso_df.columns and 'Q' in str(enso_df['Unnamed: 0'].iloc[0])):
+                    if 'date' in enso_df.columns:
+                        # Extract years from quarterly data (format: "1Q2011")
+                        temp_df = enso_df.copy()
+                        temp_df['Year'] = temp_df['date'].str.extract(r'Q(\d{4})$').astype(int)
+                        available_years = sorted(temp_df['Year'].unique())
+                    elif 'Quarter_Year' in enso_df.columns or ('Unnamed: 0' in enso_df.columns and 'Q' in str(enso_df['Unnamed: 0'].iloc[0])):
                         # Extract years from quarterly data
                         temp_df = enso_df.copy()
                         if 'Quarter_Year' in enso_df.columns:
                             quarterly_col = 'Quarter_Year'
                         else:
                             quarterly_col = 'Unnamed: 0'
-                        temp_df['Year'] = temp_df[quarterly_col].str.extract(r'(\d{2})$').astype(int) + 2000
+                        temp_df['Year'] = temp_df[quarterly_col].str.extract(r'Q(\d{4})$').astype(int)
                         available_years = sorted(temp_df['Year'].unique())
                     elif 'Year' in enso_df.columns:
                         available_years = sorted(enso_df['Year'].unique())
@@ -3299,12 +3316,15 @@ elif selected_page == "🌤️Weather":
                         year_cutoff = current_year - 10
                     
                     # Apply year filter based on data structure
-                    if 'Quarter_Year' in enso_df.columns or ('Unnamed: 0' in enso_df.columns and 'Q' in str(enso_df['Unnamed: 0'].iloc[0])):
+                    if 'date' in display_df.columns:
+                        display_df['Year'] = display_df['date'].str.extract(r'Q(\d{4})$').astype(int)
+                        display_df = display_df[display_df['Year'] >= year_cutoff]
+                    elif 'Quarter_Year' in enso_df.columns or ('Unnamed: 0' in enso_df.columns and 'Q' in str(enso_df['Unnamed: 0'].iloc[0])):
                         if 'Quarter_Year' in enso_df.columns:
                             quarterly_col = 'Quarter_Year'
                         else:
                             quarterly_col = 'Unnamed: 0'
-                        display_df['Year'] = display_df[quarterly_col].str.extract(r'(\d{2})$').astype(int) + 2000
+                        display_df['Year'] = display_df[quarterly_col].str.extract(r'Q(\d{4})$').astype(int)
                         display_df = display_df[display_df['Year'] >= year_cutoff]
                     elif 'Year' in enso_df.columns:
                         display_df = display_df[display_df['Year'] >= year_cutoff]
@@ -3312,23 +3332,25 @@ elif selected_page == "🌤️Weather":
                 # Process data based on selected period - ensuring proper quarterly baseline
                 # First, ensure we have quarterly data properly structured
                 quarterly_col = None
-                if 'Quarter_Year' in display_df.columns:
+                if 'date' in display_df.columns:
+                    quarterly_col = 'date'
+                elif 'Quarter_Year' in display_df.columns:
                     quarterly_col = 'Quarter_Year'
                 elif 'Unnamed: 0' in display_df.columns and 'Q' in str(display_df['Unnamed: 0'].iloc[0]):
                     quarterly_col = 'Unnamed: 0'
                 
                 if quarterly_col:
-                    # Extract year and quarter information
-                    display_df['Year'] = display_df[quarterly_col].str.extract(r'(\d{2})$').astype(int) + 2000
-                    display_df['Quarter_Num'] = display_df[quarterly_col].str.extract(r'(\d)Q').astype(int)
+                    # Extract year and quarter information from format like "1Q2011"
+                    display_df['Quarter_Num'] = display_df[quarterly_col].str.extract(r'^(\d)Q').astype(int)
+                    display_df['Year'] = display_df[quarterly_col].str.extract(r'Q(\d{4})$').astype(int)
                     
-                    # Create proper quarter labels starting from 1Q2011
-                    display_df['Quarter_Label'] = display_df['Year'].astype(str) + 'Q' + display_df['Quarter_Num'].astype(str)
+                    # Use the original column as quarter label (it's already in correct format like "1Q2011")
+                    display_df['Quarter_Label'] = display_df[quarterly_col]
                     
                     if enso_period == "Quarterly":
                         # Show quarterly data with proper labels
-                        x_data = display_df['Quarter_Label']
-                        y_data = display_df[oni_column]
+                        x_data = display_df['Quarter_Label'].tolist()
+                        y_data = display_df[oni_column].tolist()
                         x_title = "Quarter"
                     
                     elif enso_period == "Semi-annually":
@@ -3337,15 +3359,17 @@ elif selected_page == "🌤️Weather":
                         display_df['Half_Label'] = display_df['Year'].astype(str) + 'H' + display_df['Half'].astype(str)
                         
                         semi_annual_data = display_df.groupby(['Year', 'Half', 'Half_Label'])[oni_column].mean().reset_index()
-                        x_data = semi_annual_data['Half_Label']
-                        y_data = semi_annual_data[oni_column]
+                        semi_annual_data = semi_annual_data.sort_values(['Year', 'Half'])
+                        x_data = semi_annual_data['Half_Label'].tolist()
+                        y_data = semi_annual_data[oni_column].tolist()
                         x_title = "Half Year"
                     
                     else:  # Annually
                         # Annual aggregation - average of all quarters in each year
                         yearly_data = display_df.groupby('Year')[oni_column].mean().reset_index()
-                        x_data = yearly_data['Year'].astype(str)
-                        y_data = yearly_data[oni_column]
+                        yearly_data = yearly_data.sort_values('Year')
+                        x_data = yearly_data['Year'].astype(str).tolist()
+                        y_data = yearly_data[oni_column].tolist()
                         x_title = "Year"
                 
                 else:
@@ -3412,10 +3436,7 @@ elif selected_page == "🌤️Weather":
                     height=500,
                     showlegend=False,
                     xaxis=dict(
-                        tickangle=45 if enso_period == "Quarterly" else 0,
-                        tickmode='array',
-                        tickvals=list(range(len(x_data))),
-                        ticktext=list(x_data)
+                        tickangle=45 if enso_period == "Quarterly" else 0
                     )
                 )
                 
@@ -3465,58 +3486,61 @@ elif selected_page == "🌤️Weather":
 
 # Hydro Strategies Page
 elif selected_page == "💧Hydro Strategies":
-    st.header("💧 Hydro Strategies")
-    
-    try:
-        # Run the Hydro strategy analysis with default parameters (removed quarter selection)
-        from hydro_strategy import run_flood_portfolio_strategy
-        run_flood_portfolio_strategy(strategy_type="New Methodology", selected_quarter="2020Q2")
-    except ImportError:
+    # Use CSV-based display if available, otherwise fall back to calculation
+    if STRATEGY_RESULTS_LOADER_AVAILABLE:
+        display_hydro_strategy_from_csv()
+    elif HYDRO_STRATEGY_AVAILABLE:
+        st.header("💧 Hydro Strategies")
+        try:
+            from hydro_strategy import run_flood_portfolio_strategy
+            run_flood_portfolio_strategy(strategy_type="New Methodology", selected_quarter="2020Q2")
+        except Exception as e:
+            st.error(f"Error running hydro strategy: {e}")
+    else:
         st.error("Hydro strategy module is not available. Please check the hydro_strategy.py file.")
 
 # Coal Strategies Page
 elif selected_page == "⛏️Coal Strategies":
-    st.header("⛏️ Coal Strategy")
-    
-    # Check if coal strategy module is available
-    if COAL_STRATEGY_AVAILABLE:
-        # Run the coal strategy analysis using the modular function
+    # Use CSV-based display if available, otherwise fall back to calculation
+    if STRATEGY_RESULTS_LOADER_AVAILABLE:
+        display_coal_strategy_from_csv()
+    elif COAL_STRATEGY_AVAILABLE:
+        st.header("⛏️ Coal Strategy")
         run_coal_strategy()
     else:
         st.error("Coal strategy module is not available. Please check the coal_strategy.py file.")
 
 # Gas Strategies Page
 elif selected_page == "🔥Gas Strategies":
-    st.header("🔥 Gas Power Plant Trading Strategy")
-    
-    # Strategy Description
-    st.markdown("""
-    ### Strategy Overview
-    
-    **Methodology:**
-    - **Diversified Portfolio**: Dynamically allocates between POW and NT2 based on growth differentials
-      - If POW growth - NT2 growth > 20%: Invest 100% in POW next quarter
-      - If NT2 growth - POW growth > 20%: Invest 100% in NT2 next quarter  
-      - Otherwise: Equal weight allocation (50/50)
-    - **Concentrated Portfolio**: Always invests 100% in the stock with higher YoY growth
-    
-    """)
-    
-    # Check if gas strategy module is available
-    if GAS_STRATEGY_AVAILABLE:
-        # Create sub-tabs for gas strategy like hydro and coal strategies
+    # Use CSV-based display if available, otherwise fall back to calculation
+    if STRATEGY_RESULTS_LOADER_AVAILABLE:
+        display_gas_strategy_from_csv()
+    elif GAS_STRATEGY_AVAILABLE:
+        st.header("🔥 Gas Power Plant Trading Strategy")
+        
+        # Strategy Description
+        st.markdown("""
+        ### Strategy Overview
+        
+        **Methodology:**
+        - **Diversified Portfolio**: Dynamically allocates between POW and NT2 based on growth differentials
+          - If POW growth - NT2 growth > 20%: Invest 100% in POW next quarter
+          - If NT2 growth - POW growth > 20%: Invest 100% in NT2 next quarter  
+          - Otherwise: Equal weight allocation (50/50)
+        - **Concentrated Portfolio**: Always invests 100% in the stock with higher YoY growth
+        
+        """)
+        
+        # Create sub-tabs for gas strategy
         gas_tab1, gas_tab2, gas_tab3 = st.tabs(["📊 Performance Chart", "📋 Portfolio Details", "📈 Volume Growth"])
         
         with gas_tab1:
-            # Performance Chart tab content
             run_gas_strategy(None, convert_df_to_excel, convert_df_to_csv, tab_focus="performance")
         
         with gas_tab2:
-            # Portfolio Details tab content
             run_gas_strategy(None, convert_df_to_excel, convert_df_to_csv, tab_focus="details")
         
         with gas_tab3:
-            # Volume Growth tab content
             run_gas_strategy(None, convert_df_to_excel, convert_df_to_csv, tab_focus="growth")
     else:
         st.error("Gas strategy module is not available. Please check the gas_strategy.py file.")
